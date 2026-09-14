@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Grabber stream downloader</title>
+  </head>
+  <body>
+    <!--
+      Hidden worker page. The user never sees this: the background service
+      worker creates it on demand to run ffmpeg.wasm, which needs a real DOM
+      context that an MV3 service worker doesn't provide.
+    -->
+    <script src="../dist/offscreen.js"></script>
+  </body>
+</html>

@@ -1,10 +1,19 @@
 {
   "manifest_version": 3,
   "name": "Grabber - Media & File Downloader",
-  "version": "0.1.0",
-  "description": "Detects downloadable media and files on the current page (video, audio, images, documents, archives) and lets you pick what to download.",
+  "version": "0.2.0",
+  "description": "Detects downloadable media, files and video streams (HLS/DASH) on the current page and lets you pick what to download.",
 
-  "permissions": ["downloads", "webRequest", "webNavigation", "storage", "tabs", "scripting"],
+  "permissions": [
+    "downloads",
+    "webRequest",
+    "webNavigation",
+    "storage",
+    "tabs",
+    "scripting",
+    "offscreen",
+    "notifications"
+  ],
   "host_permissions": ["<all_urls>"],
 
   "background": {
@@ -23,7 +32,18 @@
 
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "Grabber - Media & File Downloader"
+    "default_title": "Grabber - Media & File Downloader",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   },
 
   "browser_specific_settings": {

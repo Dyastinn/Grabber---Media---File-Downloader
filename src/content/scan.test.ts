@@ -48,12 +48,15 @@ describe("extractMediaItems", () => {
     expect(extractMediaItems(doc, PAGE_URL)).toEqual([]);
   });
 
-  it("ignores HLS/DASH streaming manifests", () => {
+  it("detects HLS/DASH streaming manifests as streams, tagged with their kind", () => {
     const doc = docFromHtml(`
       <video src="https://cdn.example.com/index.m3u8"></video>
       <a href="https://cdn.example.com/manifest.mpd">Stream</a>
     `);
-    expect(extractMediaItems(doc, PAGE_URL)).toEqual([]);
+    const items = extractMediaItems(doc, PAGE_URL);
+    expect(items).toHaveLength(2);
+    expect(items.every((item) => item.category === "stream")).toBe(true);
+    expect(items.map((item) => item.streamKind).sort()).toEqual(["dash", "hls"]);
   });
 
   it("dedupes repeated URLs", () => {

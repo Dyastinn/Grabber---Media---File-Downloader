@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fixture stream page</title>
+  </head>
+  <body>
+    <h1>Fixture page with an HLS stream</h1>
+    <!--
+      A page whose video is an adaptive stream rather than a single file.
+      Real sites usually load this via a player library; a plain src is enough
+      to exercise the extension's detection path.
+    -->
+    <video src="/stream/master.m3u8" controls></video>
+  </body>
+</html>

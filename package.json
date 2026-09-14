@@ -1,8 +1,8 @@
 {
   "name": "grabber-media-downloader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Cross-browser (Chrome/Edge/Firefox) extension that detects downloadable media and files on a page.",
+  "description": "Cross-browser (Chrome/Edge/Firefox) extension that detects downloadable media, files and video streams on a page.",
   "type": "module",
   "scripts": {
     "build": "node esbuild.config.mjs",
@@ -20,5 +20,10 @@
     "jsdom": "^25.0.0",
     "typescript": "^5.5.4",
     "vitest": "^2.0.5"
+  },
+  "dependencies": {
+    "@ffmpeg/core": "^0.12.6",
+    "@ffmpeg/ffmpeg": "^0.12.10",
+    "@ffmpeg/util": "^0.12.1"
   }
 }

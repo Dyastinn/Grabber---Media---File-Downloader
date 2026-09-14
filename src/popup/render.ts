@@ -3,10 +3,22 @@
 // via event delegation on the returned elements' data-* attributes), so
 // these are testable with plain jsdom.
 
+import type { StreamProgressEntry } from "../shared/messages";
 import type { MediaCategory, MediaItem } from "../shared/media-types";
 
-const CATEGORY_ORDER: MediaCategory[] = ["video", "audio", "image", "document", "archive", "other"];
+// Streams first: they're usually what someone opened the extension for on a
+// video page, and they're the only category needing an extra choice.
+const CATEGORY_ORDER: MediaCategory[] = [
+  "stream",
+  "video",
+  "audio",
+  "image",
+  "document",
+  "archive",
+  "other",
+];
 const CATEGORY_LABEL: Record<MediaCategory, string> = {
+  stream: "Video stream",
   video: "Video",
   audio: "Audio",
   image: "Image",
@@ -43,6 +55,11 @@ export function renderEmptyState(): HTMLElement {
 export function renderRow(item: MediaItem): HTMLElement {
   const row = document.createElement("li");
   row.className = "media-row";
+  // Lets the wiring layer find this row again to show a picker or progress bar.
+  row.dataset["url"] = item.url;
+
+  const main = document.createElement("div");
+  main.className = "media-main";
 
   const info = document.createElement("div");
   info.className = "media-info";
@@ -60,17 +77,113 @@ export function renderRow(item: MediaItem): HTMLElement {
     info.appendChild(sizeEl);
   }
 
-  row.appendChild(info);
+  main.appendChild(info);
 
   const button = document.createElement("button");
-  button.className = "download-btn";
   button.type = "button";
-  button.textContent = "Download";
   button.dataset["url"] = item.url;
-  button.dataset["filename"] = item.filename;
-  row.appendChild(button);
+
+  if (item.category === "stream") {
+    // A stream is a manifest, not a file: the user picks a quality first, and
+    // the download is assembled from many segments.
+    button.className = "quality-btn";
+    button.textContent = "Choose quality";
+  } else {
+    button.className = "download-btn";
+    button.textContent = "Download";
+    button.dataset["filename"] = item.filename;
+  }
+
+  main.appendChild(button);
+  row.appendChild(main);
+
+  // Where the quality picker / progress bar / error message gets swapped in.
+  const extra = document.createElement("div");
+  extra.className = "row-extra";
+  row.appendChild(extra);
 
   return row;
+}
+
+/** One selectable quality in the stream picker. */
+export interface QualityOption {
+  label: string;
+  detail?: string;
+}
+
+/**
+ * The quality picker. Each button carries its index, which the wiring layer
+ * maps back to the parsed variant it stashed when the manifest was fetched.
+ */
+export function renderQualityOptions(options: QualityOption[]): HTMLElement {
+  const container = document.createElement("div");
+  container.className = "quality-options";
+
+  for (const [index, option] of options.entries()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "quality-option";
+    button.dataset["index"] = String(index);
+
+    const label = document.createElement("span");
+    label.className = "quality-label";
+    label.textContent = option.label;
+    button.appendChild(label);
+
+    if (option.detail) {
+      const detail = document.createElement("span");
+      detail.className = "quality-detail";
+      detail.textContent = option.detail;
+      button.appendChild(detail);
+    }
+
+    container.appendChild(button);
+  }
+
+  return container;
+}
+
+const PHASE_LABEL: Record<StreamProgressEntry["phase"], string> = {
+  fetching: "Downloading segments",
+  decrypting: "Decrypting",
+  muxing: "Merging video and audio",
+  saving: "Saving",
+  done: "Saved",
+  error: "Failed",
+};
+
+/** Progress bar for an in-flight (or finished) stream download. */
+export function renderStreamProgress(entry: StreamProgressEntry): HTMLElement {
+  const container = document.createElement("div");
+  container.className = `stream-progress stream-progress-${entry.phase}`;
+
+  const label = document.createElement("span");
+  label.className = "progress-label";
+  label.textContent =
+    entry.phase === "error"
+      ? (entry.error ?? PHASE_LABEL.error)
+      : `${PHASE_LABEL[entry.phase]}${entry.phase === "done" ? "" : ` — ${Math.round(entry.percent)}%`}`;
+  container.appendChild(label);
+
+  if (entry.phase !== "error") {
+    const track = document.createElement("div");
+    track.className = "progress-track";
+    const fill = document.createElement("div");
+    fill.className = "progress-fill";
+    fill.style.width = `${Math.min(Math.max(entry.percent, 0), 100)}%`;
+    track.appendChild(fill);
+    container.appendChild(track);
+  }
+
+  return container;
+}
+
+/** A short status/error line shown under a row (e.g. an unsupported stream). */
+export function renderNotice(text: string): HTMLElement {
+  const notice = document.createElement("p");
+  notice.className = "row-notice";
+  notice.textContent = text;
+  return notice;
 }
 
 function renderCategoryGroup(category: MediaCategory, items: MediaItem[]): HTMLElement {

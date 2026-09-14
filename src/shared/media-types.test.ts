@@ -3,8 +3,8 @@ import {
   classifyByContentType,
   classifyByUrl,
   classifyMedia,
+  classifyStreamKind,
   getUrlExtension,
-  isStreamingManifest,
 } from "./media-types";
 
 describe("getUrlExtension", () => {
@@ -61,25 +61,52 @@ describe("classifyByContentType", () => {
 
 describe("classifyMedia", () => {
   it("prefers the URL extension over content-type", () => {
-    expect(classifyMedia("https://example.com/a.mp4", "application/octet-stream")).toBe("video");
+    expect(classifyMedia("https://example.com/a.mp4", "application/octet-stream")).toEqual({
+      category: "video",
+    });
   });
 
   it("falls back to content-type when the URL has no usable extension", () => {
-    expect(classifyMedia("https://example.com/download?id=1", "audio/mpeg")).toBe("audio");
+    expect(classifyMedia("https://example.com/download?id=1", "audio/mpeg")).toEqual({
+      category: "audio",
+    });
   });
 
   it("returns null when neither signal matches", () => {
     expect(classifyMedia("https://example.com/page", "text/html")).toBeNull();
   });
-});
 
-describe("isStreamingManifest", () => {
-  it("flags HLS and DASH manifests", () => {
-    expect(isStreamingManifest("https://example.com/index.m3u8")).toBe(true);
-    expect(isStreamingManifest("https://example.com/manifest.mpd")).toBe(true);
+  it("classifies streaming manifests as streams, with their kind", () => {
+    expect(classifyMedia("https://example.com/index.m3u8")).toEqual({
+      category: "stream",
+      streamKind: "hls",
+    });
+    expect(classifyMedia("https://example.com/manifest.mpd")).toEqual({
+      category: "stream",
+      streamKind: "dash",
+    });
   });
 
-  it("does not flag regular media files", () => {
-    expect(isStreamingManifest("https://example.com/video.mp4")).toBe(false);
+  it("classifies an extension-less manifest URL by its content type", () => {
+    expect(classifyMedia("https://example.com/playlist", "application/vnd.apple.mpegurl")).toEqual({
+      category: "stream",
+      streamKind: "hls",
+    });
+  });
+});
+
+describe("classifyStreamKind", () => {
+  it("identifies HLS and DASH by extension", () => {
+    expect(classifyStreamKind("https://example.com/index.m3u8")).toBe("hls");
+    expect(classifyStreamKind("https://example.com/manifest.mpd")).toBe("dash");
+  });
+
+  it("identifies manifests by content type when the URL has no extension", () => {
+    expect(classifyStreamKind("https://example.com/playlist", "application/x-mpegURL")).toBe("hls");
+    expect(classifyStreamKind("https://example.com/manifest", "application/dash+xml")).toBe("dash");
+  });
+
+  it("returns null for regular media files", () => {
+    expect(classifyStreamKind("https://example.com/video.mp4", "video/mp4")).toBeNull();
   });
 });

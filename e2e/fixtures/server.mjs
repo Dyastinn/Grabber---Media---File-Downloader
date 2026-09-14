@@ -17,6 +17,8 @@ const MIME_TYPES = {
   ".pdf": "application/pdf",
   ".zip": "application/zip",
   ".mp3": "audio/mpeg",
+  ".m3u8": "application/vnd.apple.mpegurl",
+  ".ts": "video/mp2t",
 };
 
 const server = http.createServer((req, res) => {

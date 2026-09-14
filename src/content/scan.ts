@@ -1,7 +1,7 @@
 // Pure function — takes a Document (and the page's URL), returns data. No
 // chrome.* calls, so this is testable with plain jsdom and no real browser.
 
-import { classifyByUrl, isStreamingManifest, type MediaItem } from "../shared/media-types";
+import { classifyMedia, type MediaItem } from "../shared/media-types";
 import { guessFilename } from "../shared/filename";
 
 const MEDIA_SELECTOR = "video[src], video source[src], audio[src], audio source[src], a[href]";
@@ -9,18 +9,19 @@ const MEDIA_SELECTOR = "video[src], video source[src], audio[src], audio source[
 /**
  * Resolves an element's src/href against the document's base URL and
  * classifies it. Returns null for anything that isn't a recognized
- * downloadable type (including HLS/DASH manifests, out of scope for v0.1).
+ * downloadable type. Streaming manifests (.m3u8/.mpd) come back as
+ * category "stream" — the popup offers a quality picker for those.
  */
 function toMediaItem(url: string, sourceUrl: string, detectedAt: number): MediaItem | null {
-  if (isStreamingManifest(url)) return null;
-  const category = classifyByUrl(url);
-  if (!category) return null;
+  const classification = classifyMedia(url);
+  if (!classification) return null;
   return {
     url,
-    category,
+    category: classification.category,
     filename: guessFilename(url),
     sourceUrl,
     detectedAt,
+    ...(classification.streamKind && { streamKind: classification.streamKind }),
   };
 }
 

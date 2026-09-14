@@ -3,19 +3,31 @@
 // background network watcher and the content-script DOM scanner both import
 // these functions instead of each maintaining their own copy.
 
-export type MediaCategory = "video" | "audio" | "image" | "document" | "archive" | "other";
+export type MediaCategory =
+  | "video"
+  | "audio"
+  | "image"
+  | "document"
+  | "archive"
+  | "stream"
+  | "other";
+
+/** Adaptive-streaming manifest formats. A "stream" item is a manifest, not a file. */
+export type StreamKind = "hls" | "dash";
 
 export interface MediaItem {
   url: string;
   category: MediaCategory;
   filename: string;
   contentType?: string;
-  /** Size in bytes, when known from a Content-Length header. */
+  /** Size in bytes, when known from a Content-Length header. Never set for streams. */
   size?: number;
   /** The page URL this item was found on. */
   sourceUrl: string;
   /** ms since epoch, when the item was first detected. */
   detectedAt: number;
+  /** Only set when category is "stream" — which manifest format this is. */
+  streamKind?: StreamKind;
 }
 
 const EXTENSION_TO_CATEGORY: Record<string, MediaCategory> = {
@@ -89,8 +101,19 @@ const MIME_PREFIX_TO_CATEGORY: Array<[prefix: string, category: MediaCategory]> 
   ["application/gzip", "archive"],
 ];
 
-/** Streaming-manifest formats we explicitly don't support yet (HLS/DASH). */
-const STREAMING_MANIFEST_EXTENSIONS = new Set(["m3u8", "mpd"]);
+const STREAM_EXTENSION_TO_KIND: Record<string, StreamKind> = {
+  m3u8: "hls",
+  m3u: "hls",
+  mpd: "dash",
+};
+
+const STREAM_MIME_TO_KIND: Array<[prefix: string, kind: StreamKind]> = [
+  ["application/vnd.apple.mpegurl", "hls"],
+  ["application/x-mpegurl", "hls"],
+  ["audio/mpegurl", "hls"],
+  ["audio/x-mpegurl", "hls"],
+  ["application/dash+xml", "dash"],
+];
 
 function extensionFromPathname(pathname: string): string | undefined {
   const lastSegment = pathname.split("/").pop() ?? "";
@@ -109,10 +132,25 @@ export function getUrlExtension(url: string): string | undefined {
   }
 }
 
-/** True for .m3u8 / .mpd URLs — deliberately out of scope for v0.1 (see README). */
-export function isStreamingManifest(url: string): boolean {
+/**
+ * Identifies adaptive-streaming manifests (HLS/DASH). Prefers the URL
+ * extension, falls back to Content-Type — many CDNs serve manifests from
+ * extension-less URLs but always set the right MIME type.
+ */
+export function classifyStreamKind(
+  url: string,
+  contentType?: string | null
+): StreamKind | null {
   const ext = getUrlExtension(url);
-  return ext !== undefined && STREAMING_MANIFEST_EXTENSIONS.has(ext);
+  if (ext !== undefined && STREAM_EXTENSION_TO_KIND[ext]) {
+    return STREAM_EXTENSION_TO_KIND[ext];
+  }
+  if (!contentType) return null;
+  const normalized = contentType.toLowerCase().trim();
+  for (const [prefix, kind] of STREAM_MIME_TO_KIND) {
+    if (normalized.startsWith(prefix)) return kind;
+  }
+  return null;
 }
 
 /** Classifies a URL by its file extension. Returns null if it's not a recognized downloadable type. */
@@ -132,11 +170,25 @@ export function classifyByContentType(contentType: string | undefined | null): M
   return null;
 }
 
+export interface Classification {
+  category: MediaCategory;
+  /** Only present when category is "stream". */
+  streamKind?: StreamKind;
+}
+
 /**
- * Best-effort combined classification: prefer the URL extension (cheap, always
- * available), fall back to the Content-Type header (needed for extension-less
- * URLs, e.g. CDN links with query-string filenames).
+ * Best-effort combined classification: streams first (a .m3u8 is a manifest,
+ * not a text file), then the URL extension (cheap, always available), then the
+ * Content-Type header (needed for extension-less URLs, e.g. CDN links with
+ * query-string filenames).
+ *
+ * Returning category and stream kind together means callers never have to run
+ * two classification passes and risk disagreeing about what an item is.
  */
-export function classifyMedia(url: string, contentType?: string | null): MediaCategory | null {
-  return classifyByUrl(url) ?? classifyByContentType(contentType);
+export function classifyMedia(url: string, contentType?: string | null): Classification | null {
+  const streamKind = classifyStreamKind(url, contentType);
+  if (streamKind) return { category: "stream", streamKind };
+
+  const category = classifyByUrl(url) ?? classifyByContentType(contentType);
+  return category ? { category } : null;
 }
