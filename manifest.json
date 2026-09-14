@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Grabber - Media & File Downloader",
+  "version": "0.1.0",
+  "description": "Detects downloadable media and files on the current page (video, audio, images, documents, archives) and lets you pick what to download.",
+
+  "permissions": ["downloads", "webRequest", "webNavigation", "storage", "tabs", "scripting"],
+  "host_permissions": ["<all_urls>"],
+
+  "background": {
+    "service_worker": "dist/background.js",
+    "scripts": ["dist/background.js"]
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["dist/content-script.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Grabber - Media & File Downloader"
+  },
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "grabber@dyastinn.local",
+      "strict_min_version": "109.0"
+    }
+  }
+}

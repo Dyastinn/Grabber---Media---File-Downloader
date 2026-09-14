@@ -1,0 +1,24 @@
+{
+  "name": "grabber-media-downloader",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cross-browser (Chrome/Edge/Firefox) extension that detects downloadable media and files on a page.",
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "npm run build && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0",
+    "@types/chrome": "^0.0.270",
+    "@types/node": "^22.5.0",
+    "esbuild": "^0.23.0",
+    "jsdom": "^25.0.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}
