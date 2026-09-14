@@ -28,6 +28,27 @@ export interface MediaItem {
   detectedAt: number;
   /** Only set when category is "stream" — which manifest format this is. */
   streamKind?: StreamKind;
+  /**
+   * Human-readable name from the page (e.g. a video's title), when a scanner
+   * can determine one. Used to name the saved file instead of the URL's last
+   * path segment, which on video hosts is a meaningless "master.m3u8".
+   */
+  title?: string;
+  /**
+   * Only for streams. Some hosts publish a separate manifest per quality
+   * instead of one master listing them all. Rather than one row per quality,
+   * a scanner can emit one item — `url` is the highest-quality manifest —
+   * and list every quality here, so the popup builds its picker from this
+   * list instead of from the item's own manifest.
+   */
+  qualitySources?: StreamQualitySource[];
+}
+
+/** One same-video manifest at a given quality; see MediaItem.qualitySources. */
+export interface StreamQualitySource {
+  url: string;
+  /** Vertical resolution, e.g. 720. */
+  height: number;
 }
 
 const EXTENSION_TO_CATEGORY: Record<string, MediaCategory> = {

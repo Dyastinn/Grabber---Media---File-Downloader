@@ -21,7 +21,7 @@ export function loadFfmpeg(): Promise<FFmpeg> {
     await ffmpeg.load({
       coreURL: chrome.runtime.getURL("dist/ffmpeg/ffmpeg-core.js"),
       wasmURL: chrome.runtime.getURL("dist/ffmpeg/ffmpeg-core.wasm"),
-      classWorkerURL: chrome.runtime.getURL("dist/ffmpeg/814.ffmpeg.js"),
+      classWorkerURL: chrome.runtime.getURL("dist/ffmpeg/worker.js"),
     });
     return ffmpeg;
   })();

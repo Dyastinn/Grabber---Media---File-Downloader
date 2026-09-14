@@ -22,7 +22,7 @@ import type {
   StreamProgressEntry,
   StreamProgressListMessage,
 } from "../shared/messages";
-import type { MediaItem } from "../shared/media-types";
+import type { MediaItem, StreamQualitySource } from "../shared/media-types";
 import {
   describeQuality,
   pickAudioRendition,
@@ -48,9 +48,13 @@ function getRoot(): HTMLElement {
 const root = getRoot();
 
 /** What the picker for a given manifest URL is offering, so a click can be turned back into a plan. */
-type PickerContext =
-  | { kind: "hls"; manifestUrl: string; variants: HlsVariant[]; audioRenditions: HlsAudioRendition[] }
-  | { kind: "dash"; manifestUrl: string; representations: DashRepresentation[]; audio: DashRepresentation[] };
+type PickerContext = { manifestUrl: string; title?: string } & (
+  | { kind: "hls"; variants: HlsVariant[]; audioRenditions: HlsAudioRendition[] }
+  | { kind: "dash"; representations: DashRepresentation[]; audio: DashRepresentation[] }
+  // One manifest per quality (see MediaItem.qualitySources): the chosen
+  // source's manifest is only fetched once the user picks.
+  | { kind: "hls-sources"; sources: StreamQualitySource[] }
+);
 
 const pickers = new Map<string, PickerContext>();
 let items: MediaItem[] = [];
@@ -95,6 +99,23 @@ const byBandwidthDescending = <T extends { bandwidth: number }>(a: T, b: T): num
 
 /** Fetches and parses a manifest, then shows what qualities are available. */
 async function openQualityPicker(item: MediaItem): Promise<void> {
+  // A site that serves one manifest per quality already told us the choices;
+  // nothing to fetch until the user picks one.
+  if (item.qualitySources && item.qualitySources.length > 0) {
+    const sources = [...item.qualitySources].sort((a, b) => b.height - a.height);
+    pickers.set(item.url, {
+      kind: "hls-sources",
+      manifestUrl: item.url,
+      ...(item.title && { title: item.title }),
+      sources,
+    });
+    showOptions(
+      item.url,
+      sources.map((source) => ({ label: describeQuality(source.height, 0) }))
+    );
+    return;
+  }
+
   showInRow(item.url, renderNotice("Loading stream details..."));
 
   try {
@@ -111,6 +132,7 @@ async function openQualityPicker(item: MediaItem): Promise<void> {
       pickers.set(item.url, {
         kind: "dash",
         manifestUrl: item.url,
+        ...(item.title && { title: item.title }),
         representations,
         audio: parsed.audio,
       });
@@ -137,6 +159,7 @@ async function openQualityPicker(item: MediaItem): Promise<void> {
       pickers.set(item.url, {
         kind: "hls",
         manifestUrl: item.url,
+        ...(item.title && { title: item.title }),
         variants,
         audioRenditions: master.audioRenditions,
       });
@@ -154,6 +177,7 @@ async function openQualityPicker(item: MediaItem): Promise<void> {
     pickers.set(item.url, {
       kind: "hls",
       manifestUrl: item.url,
+      ...(item.title && { title: item.title }),
       variants: [soleVariant],
       audioRenditions: [],
     });
@@ -203,25 +227,52 @@ async function buildPlan(context: PickerContext, index: number): Promise<StreamP
     const audio = pickHighestBandwidth(context.audio);
     return planDashDownload({
       manifestUrl: context.manifestUrl,
+      ...(context.title && { title: context.title }),
       video,
       ...(audio && { audio }),
     });
   }
 
+  if (context.kind === "hls-sources") {
+    const source = context.sources[index];
+    if (!source) return { ok: false, reason: "That quality is no longer available." };
+
+    // The per-quality manifest is normally a one-variant master, but treat it
+    // exactly like any other HLS manifest in case it isn't.
+    const text = await fetchText(source.url);
+    if (isMasterPlaylist(text)) {
+      const master = parseMasterPlaylist(text, source.url);
+      const variant = pickHighestBandwidth(master.variants);
+      if (!variant) return { ok: false, reason: "This playlist didn't list any video variants." };
+      return planHlsVariant(source.url, variant, master.audioRenditions, context.title);
+    }
+    return planHlsVariant(source.url, { url: source.url, bandwidth: 0 }, [], context.title);
+  }
+
   const variant = context.variants[index];
   if (!variant) return { ok: false, reason: "That quality is no longer available." };
+  return planHlsVariant(context.manifestUrl, variant, context.audioRenditions, context.title);
+}
 
+/** Fetches a chosen HLS variant's media playlist (and its audio rendition, if separate) and plans it. */
+async function planHlsVariant(
+  manifestUrl: string,
+  variant: HlsVariant,
+  audioRenditions: HlsAudioRendition[],
+  title: string | undefined
+): Promise<StreamPlanResult> {
   const videoPlaylist = parseMediaPlaylist(await fetchText(variant.url), variant.url);
 
   // CMAF/fMP4 streams often deliver audio as a separate rendition that has to
   // be fetched and muxed in; simpler streams mux audio into the video segments.
-  const audioRendition = pickAudioRendition(context.audioRenditions, variant.audioGroupId);
+  const audioRendition = pickAudioRendition(audioRenditions, variant.audioGroupId);
   const audioPlaylist = audioRendition?.url
     ? parseMediaPlaylist(await fetchText(audioRendition.url), audioRendition.url)
     : undefined;
 
   return planHlsDownload({
-    manifestUrl: context.manifestUrl,
+    manifestUrl,
+    ...(title && { title }),
     variant,
     videoPlaylist,
     ...(audioPlaylist && { audioPlaylist }),

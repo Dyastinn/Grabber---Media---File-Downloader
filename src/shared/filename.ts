@@ -36,3 +36,27 @@ export function guessFilename(url: string, contentDisposition?: string | null): 
     filenameFromContentDisposition(contentDisposition) ?? filenameFromUrl(url) ?? "download"
   );
 }
+
+// Characters that chrome.downloads.download() rejects in a filename (it
+// errors with "Invalid filename" rather than substituting), plus control
+// characters. Path separators are included so a title can't escape the
+// downloads directory.
+const UNSAFE_FILENAME_CHARS_RE = /[\\/:*?"<>|\u0000-\u001f]+/g;
+const MAX_FILENAME_LENGTH = 150;
+
+/**
+ * Turns free text (a page's video title) into something safe to pass to
+ * chrome.downloads.download(). Collapses whitespace, strips reserved
+ * characters, and caps the length — long titles otherwise hit filesystem
+ * limits once the quality suffix and extension are added.
+ */
+export function sanitizeFilename(name: string): string {
+  const cleaned = name
+    .replace(UNSAFE_FILENAME_CHARS_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    // A trailing dot makes Windows silently drop it (and "..." looks like a path).
+    .replace(/\.+$/, "")
+    .trim();
+  return cleaned.slice(0, MAX_FILENAME_LENGTH).trim();
+}

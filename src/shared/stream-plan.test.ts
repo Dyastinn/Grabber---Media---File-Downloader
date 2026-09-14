@@ -92,6 +92,16 @@ describe("suggestStreamFilename", () => {
   it("falls back to a generic name for unparseable URLs", () => {
     expect(suggestStreamFilename("not a url", "720p")).toBe("stream-720p.mp4");
   });
+
+  it("prefers a page-provided title, sanitised for the filesystem", () => {
+    expect(suggestStreamFilename(MANIFEST_URL, "720p", "Clip: part 1/2")).toBe(
+      "Clip part 1 2-720p.mp4"
+    );
+  });
+
+  it("ignores a title that sanitises to nothing", () => {
+    expect(suggestStreamFilename(MANIFEST_URL, "720p", "???")).toBe("my-video-720p.mp4");
+  });
 });
 
 describe("planHlsDownload", () => {

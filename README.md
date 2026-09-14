@@ -2,6 +2,33 @@
 
 A browser extension (Chrome, Edge, Firefox) that scans the current page for downloadable media and files — video, audio, images, documents, archives — and for adaptive video streams (HLS/DASH), which it can download and merge into a single playable MP4. Think of it as a lightweight IDM.
 
+## Installing in Chrome or Edge
+
+There is no store listing; you load the extension straight from this folder. You need [Node.js](https://nodejs.org/) (18 or newer) installed once, to build it.
+
+1. **Get the code** — clone this repository, or download it as a ZIP and extract it.
+2. **Build it** — open a terminal in the extracted folder and run:
+
+   ```sh
+   npm install
+   npm run build
+   ```
+
+   This creates a `dist/` folder next to `manifest.json`. The extension won't load without it.
+
+3. **Open the extensions page**
+   - Chrome: go to `chrome://extensions`
+   - Edge: go to `edge://extensions`
+4. **Turn on Developer mode** — the toggle is top-right in Chrome, in the left sidebar in Edge.
+5. **Click "Load unpacked"** and select the **root folder** of the repository (the one containing `manifest.json` — not `dist/`).
+6. **Pin it** — click the puzzle-piece icon in the toolbar and pin *Grabber* so it's always visible.
+
+That's it. Open any page with media, click the Grabber icon, and the popup lists what it found. The badge on the icon shows how many items were detected on the current tab.
+
+**Updating**: pull or re-download the code, run `npm run build` again, then click the ↻ reload button on the extension's card in `chrome://extensions` / `edge://extensions`.
+
+**Firefox**: works for file downloads only (stream merging needs Chromium's offscreen API). Go to `about:debugging#/runtime/this-firefox` → "Load Temporary Add-on" → select `manifest.json`. Temporary add-ons are removed when Firefox closes.
+
 ## What it supports
 
 **Direct files** — anything with a stable URL and a recognizable extension or Content-Type (mp4, webm, mp3, pdf, zip, jpg, …). Detected from both the page DOM and from actual network responses, then handed to the browser's own download manager.
@@ -25,7 +52,7 @@ These surface in the popup as a clear "not supported" message rather than produc
 1. **Content script** (`src/content/`) scans the page's DOM for `<video>`, `<audio>`, `<source>` and `<a>` elements pointing at recognized file types or stream manifests, re-scanning on DOM changes (for players that load in after the page does). It messages what it finds to the background service worker.
 2. **Background service worker** (`src/background/`) also watches network responses directly (`chrome.webRequest.onHeadersReceived`, read-only), so it catches things the DOM scan misses — most importantly the manifest requests a player makes via JavaScript, which never appear as a `src` attribute. It keeps a per-tab list, cleared when that tab navigates.
 3. **Popup** (`src/popup/` + `popup/popup.html`) shows what the current tab found. A file downloads immediately; a stream first gets its manifest fetched and parsed to offer a quality picker.
-4. **Offscreen document** (`src/offscreen/` + `offscreen/offscreen.html`) does the heavy lifting for streams: fetching segments in parallel, AES-128 decryption, and the ffmpeg merge. It's a hidden page the background worker creates on demand — see below for why it has to exist.
+4. **Offscreen document** (`src/offscreen/` + `offscreen/offscreen.html`) does the heavy lifting for streams: fetching segments in parallel, AES-128 decryption, and the ffmpeg merge. It's a hidden page the background worker creates on demand — see below for why it has to exist. It has no `chrome.downloads` (offscreen documents only get `chrome.runtime`), so the finished file goes back to the background worker as a blob URL to be saved.
 
 ### Why there's an offscreen document
 
@@ -33,7 +60,7 @@ ffmpeg.wasm needs a real DOM/Worker context, which an MV3 background service wor
 
 ### Why ffmpeg's files are copied into `dist/`
 
-Manifest V3 forbids extensions from loading executable code from a remote origin, and the extension CSP also blocks the blob-URL worker `@ffmpeg/ffmpeg` creates by default. So the build copies `ffmpeg-core.js`, `ffmpeg-core.wasm` and the library's worker chunk into `dist/ffmpeg/`, and they're loaded from `chrome-extension://` URLs. **Do not replace these with a CDN URL** (as ffmpeg.wasm's own quickstart does) — it will break the extension.
+Manifest V3 forbids extensions from loading executable code from a remote origin, and the extension CSP also blocks the blob-URL worker `@ffmpeg/ffmpeg` creates by default. So the build copies the **ESM** `ffmpeg-core.js` / `ffmpeg-core.wasm` and bundles the library's ESM worker into `dist/ffmpeg/`, and they're loaded from `chrome-extension://` URLs. **Do not replace these with a CDN URL** (as ffmpeg.wasm's own quickstart does) — it will break the extension. They also have to stay the ESM builds: the library always spawns a module worker, and the UMD worker's fallback `import()` is a stub that only ever fails with "Cannot find module". The manifest's `content_security_policy` adds `'wasm-unsafe-eval'`, without which Chrome refuses to instantiate the wasm at all.
 
 ### Where to add code
 
@@ -57,18 +84,13 @@ npm run test:e2e        # builds, then runs Playwright against a real extension 
 
 ### Loading the unpacked extension
 
-After `npm run build` (which generates `dist/`, referenced by `manifest.json` at the repo root):
-
-- **Chrome / Edge**: open `chrome://extensions` (or `edge://extensions`), enable Developer mode, click "Load unpacked", select this repo's root folder.
-- **Firefox**: open `about:debugging#/runtime/this-firefox`, click "Load Temporary Add-on", select `manifest.json` in this repo's root. (Temporary add-ons are removed when Firefox closes.)
-
-Note that stream downloading relies on `chrome.offscreen`, which is Chromium-only; on Firefox the file-download half works and stream downloads will not start.
+See [Installing in Chrome or Edge](#installing-in-chrome-or-edge) above. For development, `npm run watch` rebuilds `dist/` on save; after each rebuild, reload the extension from its card on the extensions page (content scripts and the popup pick up changes only after that).
 
 ### Testing
 
 - **Unit tests** cover all the pure logic, including fixture-based tests for HLS playlist parsing (encrypted, key-rotating, and fMP4 playlists), DASH manifest parsing, download planning, and AES-128 decryption round-trips.
 - **E2E tests** load the real built extension in real Chromium against a local fixture server (`e2e/fixtures/server.mjs`) and drive the real popup: detecting files and downloading one, and detecting an HLS stream and rendering its quality picker.
-- **Not covered by automated tests**: the final segment-fetch → decrypt → ffmpeg-merge → save pipeline. Exercising it needs genuinely valid media segments as fixtures (ffmpeg refuses to remux fake bytes), which needs `ffmpeg` installed to generate. Verify that path by hand against a real stream, per the checklist below.
+- **Not covered by automated tests**: the final segment-fetch → decrypt → ffmpeg-merge → save pipeline. Exercising it needs genuinely valid media segments as fixtures (ffmpeg refuses to remux fake bytes), which needs `ffmpeg` installed to generate. Verify that path by hand against a real stream, per the checklist below. The e2e harness (`e2e/helpers.ts`) collects console output from the extension's pages — including the otherwise invisible offscreen document — into `extension.logs`, which is the place to look when a stream download fails inside the extension.
 
 MV3 extension testing requires a headed (or `--headless=new`) Chromium — a Chrome/Playwright constraint, not something this project controls. In CI, run under `xvfb-run`.
 

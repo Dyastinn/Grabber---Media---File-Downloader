@@ -5,6 +5,7 @@
 
 import type { DashRepresentation } from "./dash-manifest";
 import { computeSegmentIv, type HlsAudioRendition, type HlsMediaPlaylist, type HlsVariant } from "./hls-playlist";
+import { sanitizeFilename } from "./filename";
 import type { StreamKind } from "./media-types";
 
 export interface PlannedSegment {
@@ -81,8 +82,18 @@ function baseNameFromUrl(url: string): string {
   }
 }
 
-export function suggestStreamFilename(manifestUrl: string, qualityLabel: string): string {
-  return `${baseNameFromUrl(manifestUrl)}-${qualityLabel}.mp4`;
+/**
+ * Names the merged output. A page-provided title (from a site extractor) beats
+ * anything derivable from the URL, which on video hosts is usually an opaque
+ * ID or a generic "master".
+ */
+export function suggestStreamFilename(
+  manifestUrl: string,
+  qualityLabel: string,
+  title?: string
+): string {
+  const base = (title && sanitizeFilename(title)) || baseNameFromUrl(manifestUrl);
+  return `${base}-${qualityLabel}.mp4`;
 }
 
 function planHlsTrack(playlist: HlsMediaPlaylist): PlannedTrack {
@@ -103,11 +114,13 @@ function planHlsTrack(playlist: HlsMediaPlaylist): PlannedTrack {
 export function planHlsDownload(options: {
   manifestUrl: string;
   variant: HlsVariant;
+  /** Page-provided name for the output file, when a site extractor found one. */
+  title?: string;
   videoPlaylist: HlsMediaPlaylist;
   /** Only when the variant references a separate EXT-X-MEDIA audio rendition. */
   audioPlaylist?: HlsMediaPlaylist;
 }): StreamPlanResult {
-  const { manifestUrl, variant, videoPlaylist, audioPlaylist } = options;
+  const { manifestUrl, variant, title, videoPlaylist, audioPlaylist } = options;
 
   const unsupported = videoPlaylist.unsupportedEncryption ?? audioPlaylist?.unsupportedEncryption;
   if (unsupported) {
@@ -130,7 +143,8 @@ export function planHlsDownload(options: {
         audioPlaylist.segments.length > 0 && { audio: planHlsTrack(audioPlaylist) }),
       suggestedFilename: suggestStreamFilename(
         manifestUrl,
-        describeQuality(variant.resolution?.height, variant.bandwidth)
+        describeQuality(variant.resolution?.height, variant.bandwidth),
+        title
       ),
     },
   };
@@ -148,8 +162,10 @@ export function planDashDownload(options: {
   video: DashRepresentation;
   /** Auto-selected highest-bandwidth audio representation, when the manifest has one. */
   audio?: DashRepresentation;
+  /** Page-provided name for the output file, when a site extractor found one. */
+  title?: string;
 }): StreamPlanResult {
-  const { manifestUrl, video, audio } = options;
+  const { manifestUrl, video, audio, title } = options;
 
   if (video.segmentUrls.length === 0) {
     return { ok: false, reason: "This stream's manifest contained no segments." };
@@ -163,7 +179,8 @@ export function planDashDownload(options: {
       ...(audio && audio.segmentUrls.length > 0 && { audio: planDashTrack(audio) }),
       suggestedFilename: suggestStreamFilename(
         manifestUrl,
-        describeQuality(video.height, video.bandwidth)
+        describeQuality(video.height, video.bandwidth),
+        title
       ),
     },
   };

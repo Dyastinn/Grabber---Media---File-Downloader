@@ -11,7 +11,12 @@
 
 import { classifyMedia, type MediaItem } from "../shared/media-types";
 import { guessFilename } from "../shared/filename";
-import type { Message, StreamProgressListMessage } from "../shared/messages";
+import type {
+  Message,
+  SaveStreamFileMessage,
+  SaveStreamFileResultMessage,
+  StreamProgressListMessage,
+} from "../shared/messages";
 import type { StreamDownloadPlan } from "../shared/stream-plan";
 import { MediaStore } from "./media-store";
 import { StreamProgressStore } from "./stream-progress-store";
@@ -123,6 +128,12 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       break;
     }
 
+    case "SAVE_STREAM_FILE": {
+      // Answered once the download finishes — the only asynchronous response here.
+      void saveStreamFile(message).then(sendResponse);
+      return true;
+    }
+
     case "STREAM_COMPLETE": {
       streamProgress.complete(message.streamUrl);
       notify("Download complete", message.filename);
@@ -144,8 +155,9 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       break;
     }
   }
-  // No async work blocks any sendResponse above — both responding branches
-  // (GET_MEDIA, GET_STREAM_PROGRESS) answer synchronously — so we don't return true.
+  // GET_MEDIA and GET_STREAM_PROGRESS answer synchronously; only the
+  // SAVE_STREAM_FILE branch returns true to keep its sendResponse alive.
+  return false;
 });
 
 // ---------------------------------------------------------------------------
@@ -160,6 +172,40 @@ async function startStreamDownload(streamUrl: string, plan: StreamDownloadPlan):
     const reason = error instanceof Error ? error.message : String(error);
     streamProgress.fail(streamUrl, reason);
     notify("Download failed", reason);
+  }
+}
+
+/**
+ * Downloads the offscreen document's finished file and resolves once the
+ * browser has read all of it (or given up), so the sender can revoke the blob.
+ */
+async function saveStreamFile(message: SaveStreamFileMessage): Promise<SaveStreamFileResultMessage> {
+  try {
+    const downloadId = await chrome.downloads.download({
+      url: message.blobUrl,
+      filename: message.filename,
+    });
+    const error = await new Promise<string | undefined>((resolve) => {
+      const finish = (result: string | undefined): void => {
+        chrome.downloads.onChanged.removeListener(onChanged);
+        resolve(result);
+      };
+      const onChanged = (delta: chrome.downloads.DownloadDelta): void => {
+        if (delta.id !== downloadId || !delta.state) return;
+        if (delta.state.current === "complete") finish(undefined);
+        if (delta.state.current === "interrupted") finish(delta.error?.current ?? "Download interrupted.");
+      };
+      chrome.downloads.onChanged.addListener(onChanged);
+      // The download may already have finished before the listener was attached.
+      chrome.downloads.search({ id: downloadId }, ([item]) => {
+        if (item?.state === "complete") finish(undefined);
+        if (item?.state === "interrupted") finish(item.error ?? "Download interrupted.");
+      });
+    });
+    return { type: "SAVE_STREAM_FILE_RESULT", ok: error === undefined, ...(error && { error }) };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { type: "SAVE_STREAM_FILE_RESULT", ok: false, error: reason };
   }
 }
 

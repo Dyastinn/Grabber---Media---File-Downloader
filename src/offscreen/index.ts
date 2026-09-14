@@ -9,6 +9,8 @@
 import type {
   ExecuteStreamPlanMessage,
   Message,
+  SaveStreamFileMessage,
+  SaveStreamFileResultMessage,
   StreamCompleteMessage,
   StreamErrorMessage,
   StreamPhase,
@@ -78,7 +80,7 @@ async function runDownload({ streamUrl, plan }: ExecuteStreamPlanMessage): Promi
   });
 
   reportProgress(streamUrl, "saving", 100);
-  await save(output, plan.suggestedFilename);
+  await save(streamUrl, output, plan.suggestedFilename);
 
   report<StreamCompleteMessage>({
     type: "STREAM_COMPLETE",
@@ -177,17 +179,21 @@ function concatenate(parts: Uint8Array[]): Uint8Array {
   return result;
 }
 
-async function save(bytes: Uint8Array, filename: string): Promise<void> {
+/**
+ * An offscreen document has no chrome.downloads (only chrome.runtime), so the
+ * file goes out as a blob: URL for the background worker to download. The
+ * worker answers once the browser has finished reading the blob; revoking
+ * earlier would truncate the download.
+ */
+async function save(streamUrl: string, bytes: Uint8Array, filename: string): Promise<void> {
   const blobUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "video/mp4" }));
-  const downloadId = await chrome.downloads.download({ url: blobUrl, filename });
-
-  // Hold the blob URL until the browser has finished reading from it.
-  const revokeWhenFinished = (delta: chrome.downloads.DownloadDelta): void => {
-    if (delta.id !== downloadId || !delta.state) return;
-    if (delta.state.current === "complete" || delta.state.current === "interrupted") {
-      URL.revokeObjectURL(blobUrl);
-      chrome.downloads.onChanged.removeListener(revokeWhenFinished);
-    }
-  };
-  chrome.downloads.onChanged.addListener(revokeWhenFinished);
+  try {
+    const request: SaveStreamFileMessage = { type: "SAVE_STREAM_FILE", streamUrl, blobUrl, filename };
+    const result = (await chrome.runtime.sendMessage(request)) as
+      | SaveStreamFileResultMessage
+      | undefined;
+    if (!result?.ok) throw new Error(result?.error ?? "The background worker did not save the file.");
+  } finally {
+    URL.revokeObjectURL(blobUrl);
+  }
 }

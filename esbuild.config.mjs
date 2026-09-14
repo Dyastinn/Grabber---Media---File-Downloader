@@ -15,11 +15,26 @@ const watch = process.argv.includes("--watch");
 // (so no CDN), and the extension CSP blocks the blob: worker @ffmpeg/ffmpeg
 // creates by default. src/offscreen/ffmpeg-runner.ts loads these three from
 // chrome-extension:// URLs.
+//
+// They must be the ESM builds. @ffmpeg/ffmpeg always spawns its worker with
+// {type: "module"}, where importScripts() throws, so the worker falls back to
+// a dynamic import(coreURL) — and in the UMD worker chunk (814.ffmpeg.js)
+// webpack replaced that import() with a stub that only ever rejects with
+// "Cannot find module". The ESM worker keeps the real import(), which works
+// for a chrome-extension:// URL, and the ESM core is what it then imports.
 const FFMPEG_ASSETS = [
-  ["node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.js", "dist/ffmpeg/ffmpeg-core.js"],
-  ["node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.wasm", "dist/ffmpeg/ffmpeg-core.wasm"],
-  ["node_modules/@ffmpeg/ffmpeg/dist/umd/814.ffmpeg.js", "dist/ffmpeg/814.ffmpeg.js"],
+  ["node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.js", "dist/ffmpeg/ffmpeg-core.js"],
+  ["node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.wasm", "dist/ffmpeg/ffmpeg-core.wasm"],
 ];
+
+// The ESM worker imports sibling modules (const.js, errors.js), so it is
+// bundled rather than copied. format: "esm" keeps its dynamic import(coreURL)
+// as a real import, which is the whole point (see above).
+const FFMPEG_WORKER_BUILD = {
+  entryPoints: ["node_modules/@ffmpeg/ffmpeg/dist/esm/worker.js"],
+  outfile: "dist/ffmpeg/worker.js",
+  format: "esm",
+};
 
 function copyFfmpegAssets() {
   for (const [from, to] of FFMPEG_ASSETS) {
@@ -56,6 +71,7 @@ async function run() {
     entryPoints: [entry],
     outfile: `${outfile}.js`,
   }));
+  builds.push({ ...sharedOptions, ...FFMPEG_WORKER_BUILD });
 
   if (watch) {
     const contexts = await Promise.all(builds.map((options) => context(options)));
