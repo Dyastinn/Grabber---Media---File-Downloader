@@ -43,8 +43,15 @@ export function formatSize(bytes: number | undefined): string {
 export function renderEmptyState(): HTMLElement {
   const el = document.createElement("p");
   el.className = "empty-state";
-  el.textContent = "No downloadable media found on this page yet.";
+  // An empty screen is an invitation, not a report: say what to do next.
+  el.textContent = "Nothing to grab yet. Start a video or open a file, and it shows up here.";
   return el;
+}
+
+/** The header tally. Empty when nothing is found — the empty state says it better. */
+export function formatFoundCount(count: number): string {
+  if (count === 0) return "";
+  return count === 1 ? "1 found" : `${count} found`;
 }
 
 /**
@@ -57,6 +64,9 @@ export function renderRow(item: MediaItem): HTMLElement {
   row.className = "media-row";
   // Lets the wiring layer find this row again to show a picker or progress bar.
   row.dataset["url"] = item.url;
+  // Not painted from today, but it tells wiring or a future style what the
+  // row is without a lookup.
+  row.dataset["category"] = item.category;
 
   const main = document.createElement("div");
   main.className = "media-main";
@@ -67,6 +77,8 @@ export function renderRow(item: MediaItem): HTMLElement {
   const name = document.createElement("span");
   name.className = "media-filename";
   name.textContent = item.filename;
+  // The name is truncated with an ellipsis; the tooltip keeps it recoverable.
+  name.title = item.filename;
   info.appendChild(name);
 
   const size = formatSize(item.size);
@@ -98,8 +110,10 @@ export function renderRow(item: MediaItem): HTMLElement {
   row.appendChild(main);
 
   // Where the quality picker / progress bar / error message gets swapped in.
+  // Live, so a phase change or an error is announced, not just shown.
   const extra = document.createElement("div");
   extra.className = "row-extra";
+  extra.setAttribute("aria-live", "polite");
   row.appendChild(extra);
 
   return row;
@@ -109,11 +123,41 @@ export function renderRow(item: MediaItem): HTMLElement {
 export interface QualityOption {
   label: string;
   detail?: string;
+  /**
+   * Relative size of this rung, 0-1, drawn as the length of its bar. Only the
+   * HLS-master and DASH paths know a bitrate; `weightRungs` falls back to
+   * resolution height and otherwise leaves this undefined, in which case the
+   * rung renders as a plain row with no bar rather than an empty one.
+   */
+  weight?: number;
+}
+
+/** Shortest bar that still reads as a bar, so a tightly-clustered ladder
+ *  (5.0 / 4.5 / 4.0 Mbps) doesn't flatten into three identical lengths. */
+const MIN_WEIGHT = 0.12;
+
+/**
+ * Turns raw per-rung magnitudes (bitrate, or resolution height as a stand-in)
+ * into 0-1 bar weights scaled against the largest. Returns all-undefined when
+ * no rung has a usable magnitude, or when every rung is identical — a ladder
+ * of equal bars says nothing.
+ */
+export function weightRungs(magnitudes: (number | undefined)[]): (number | undefined)[] {
+  const usable = magnitudes.filter((m): m is number => typeof m === "number" && m > 0);
+  const max = Math.max(0, ...usable);
+  if (usable.length < 2 || max === 0) return magnitudes.map(() => undefined);
+  if (usable.every((m) => m === max)) return magnitudes.map(() => undefined);
+
+  return magnitudes.map((m) =>
+    typeof m === "number" && m > 0 ? MIN_WEIGHT + (1 - MIN_WEIGHT) * (m / max) : undefined
+  );
 }
 
 /**
- * The quality picker. Each button carries its index, which the wiring layer
- * maps back to the parsed variant it stashed when the manifest was fetched.
+ * The quality picker: a ladder of rungs, each bar's length its bitrate
+ * relative to the top rung. Each button carries its index, which the wiring
+ * layer maps back to the parsed variant it stashed when the manifest was
+ * fetched.
  */
 export function renderQualityOptions(options: QualityOption[]): HTMLElement {
   const container = document.createElement("div");
@@ -124,6 +168,9 @@ export function renderQualityOptions(options: QualityOption[]): HTMLElement {
     button.type = "button";
     button.className = "quality-option";
     button.dataset["index"] = String(index);
+    if (option.weight !== undefined) {
+      button.style.setProperty("--weight", String(option.weight));
+    }
 
     const label = document.createElement("span");
     label.className = "quality-label";
@@ -157,17 +204,38 @@ export function renderStreamProgress(entry: StreamProgressEntry): HTMLElement {
   const container = document.createElement("div");
   container.className = `stream-progress stream-progress-${entry.phase}`;
 
+  // Label on the left, percentage on the right, both over the bar they
+  // describe — no joined "label — 40%" string to read through.
+  const status = document.createElement("div");
+  status.className = "progress-status";
+
   const label = document.createElement("span");
   label.className = "progress-label";
-  label.textContent =
-    entry.phase === "error"
-      ? (entry.error ?? PHASE_LABEL.error)
-      : `${PHASE_LABEL[entry.phase]}${entry.phase === "done" ? "" : ` — ${Math.round(entry.percent)}%`}`;
-  container.appendChild(label);
+  label.textContent = entry.phase === "error" ? (entry.error ?? PHASE_LABEL.error) : PHASE_LABEL[entry.phase];
+  status.appendChild(label);
+
+  // The row slot is a live region, and progress re-renders per segment. Only
+  // the phase label is live text; the number is hidden from the reader and
+  // carried by the progressbar's aria-valuenow, which isn't re-announced on
+  // every tick.
+  if (entry.phase !== "error" && entry.phase !== "done") {
+    const percent = document.createElement("span");
+    percent.className = "progress-percent";
+    percent.textContent = `${Math.round(entry.percent)}%`;
+    percent.setAttribute("aria-hidden", "true");
+    status.appendChild(percent);
+  }
+
+  container.appendChild(status);
 
   if (entry.phase !== "error") {
     const track = document.createElement("div");
     track.className = "progress-track";
+    track.setAttribute("role", "progressbar");
+    track.setAttribute("aria-label", PHASE_LABEL[entry.phase]);
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", "100");
+    track.setAttribute("aria-valuenow", String(Math.round(Math.min(Math.max(entry.percent, 0), 100))));
     const fill = document.createElement("div");
     fill.className = "progress-fill";
     fill.style.width = `${Math.min(Math.max(entry.percent, 0), 100)}%`;
