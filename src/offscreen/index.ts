@@ -141,7 +141,9 @@ function getKey(keyUrl: string, cache: Map<string, Promise<CryptoKey>>): Promise
 }
 
 async function fetchBytes(url: string): Promise<Uint8Array> {
-  const response = await fetch(url);
+  // Extension pages are a different origin from the site, so cookies are not
+  // sent by default; login-gated players need them (host_permissions allows it).
+  const response = await fetch(url, { credentials: "include" });
   if (!response.ok) {
     throw new Error(`Failed to fetch ${url} (HTTP ${response.status}).`);
   }

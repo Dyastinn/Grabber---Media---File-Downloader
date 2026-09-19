@@ -42,6 +42,13 @@ export interface MediaItem {
    * list instead of from the item's own manifest.
    */
   qualitySources?: StreamQualitySource[];
+  /**
+   * Only for streams. URLs this manifest references — an HLS master's variant
+   * and audio-rendition playlists. The player fetches those too, and they
+   * would otherwise each show up as their own "video.m3u8" row; the store
+   * treats them as parts of this item instead.
+   */
+  childUrls?: string[];
 }
 
 /** One same-video manifest at a given quality; see MediaItem.qualitySources. */
@@ -172,6 +179,41 @@ export function classifyStreamKind(
     if (normalized.startsWith(prefix)) return kind;
   }
   return null;
+}
+
+/**
+ * Recognises a manifest by its CONTENT — the fallback for players whose
+ * playlist URL has no extension and whose server sends the wrong Content-Type
+ * (text/plain, application/octet-stream…), which is the norm on private
+ * players. Only the first few hundred bytes are looked at, so callers can
+ * pass a prefix.
+ */
+export function sniffManifestKind(text: string): StreamKind | null {
+  // Strip a UTF-8 BOM (U+FEFF) before looking at the first bytes.
+  const start = text.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const head = text.slice(start, 2048).trimStart();
+  if (head.startsWith("#EXTM3U")) return "hls";
+  // An MPD may open with an XML declaration and/or comments before the root element.
+  if (head.startsWith("<") && /<MPD[\s>]/.test(head)) return "dash";
+  return null;
+}
+
+const SEGMENT_EXTENSIONS = new Set(["ts", "m4s"]);
+const SEGMENT_MIME_TYPES = ["video/mp2t", "video/iso.segment"];
+
+/**
+ * True for a URL/response that is a single HLS/DASH media segment rather than
+ * a whole file. Players fetch dozens of these per minute; the network watcher
+ * must not list each one as a "video". (A `.ts` linked from the page DOM is
+ * still reported by the content script — this only concerns JS-initiated
+ * requests.)
+ */
+export function isStreamSegment(url: string, contentType?: string | null): boolean {
+  const ext = getUrlExtension(url);
+  if (ext !== undefined && SEGMENT_EXTENSIONS.has(ext)) return true;
+  if (!contentType) return false;
+  const normalized = contentType.toLowerCase().trim();
+  return SEGMENT_MIME_TYPES.some((mime) => normalized.startsWith(mime));
 }
 
 /** Classifies a URL by its file extension. Returns null if it's not a recognized downloadable type. */

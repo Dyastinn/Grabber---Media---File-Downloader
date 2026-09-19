@@ -12,7 +12,8 @@
     "tabs",
     "scripting",
     "offscreen",
-    "notifications"
+    "notifications",
+    "declarativeNetRequest"
   ],
   "host_permissions": ["<all_urls>"],
 
@@ -31,6 +32,13 @@
       "js": ["dist/content-script.js"],
       "run_at": "document_idle",
       "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["dist/sniffer.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
     }
   ],
 

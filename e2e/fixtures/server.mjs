@@ -23,6 +23,36 @@ const MIME_TYPES = {
 
 const server = http.createServer((req, res) => {
   const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
+
+  // Hotlink protection, as real video hosts do it: every stream/playlist
+  // request must carry a Referer from this site, and the private-player API
+  // additionally wants the custom header its player sends. The extension's
+  // own fetches (popup, offscreen) only pass because the background worker
+  // replays the headers it saw the page send (src/background/request-headers.ts).
+  const isStreamPath = requestPath.startsWith("/stream/") || requestPath.startsWith("/api/stream/");
+  if (isStreamPath && !(req.headers["referer"] ?? "").startsWith("http://localhost:8765/")) {
+    res.writeHead(403);
+    res.end("Referer required");
+    return;
+  }
+  if (requestPath === "/api/stream/playlist" && req.headers["x-player-token"] !== "fixture-token") {
+    res.writeHead(403);
+    res.end("X-Player-Token required");
+    return;
+  }
+
+  // A "private player" playlist endpoint: no file extension, wrong
+  // Content-Type. Exercises the page-world manifest sniffer (sniff-page.html).
+  if (requestPath === "/api/stream/playlist") {
+    // Served from a different path than the file lives at, so its variant
+    // URIs must be root-relative for the player (and the extension) to resolve them.
+    const playlist = Buffer.from(
+      fs.readFileSync(path.join(__dirname, "stream", "master.m3u8"), "utf8").replace(/^(\d+p\/)/gm, "/stream/$1")
+    );
+    res.writeHead(200, { "Content-Type": "text/plain", "Content-Length": playlist.length });
+    res.end(playlist);
+    return;
+  }
   const filePath = path.join(__dirname, requestPath);
 
   if (!filePath.startsWith(__dirname)) {

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fixture private-player page - Grabber Fixtures</title>
+  </head>
+  <body>
+    <h1>Fixture page whose player loads its playlist from an API URL</h1>
+    <!--
+      Mimics a private player: the playlist comes from an extension-less URL
+      served as text/plain (invisible to URL/Content-Type classification), and
+      the player then fetches .ts segments — which must NOT be listed as
+      thirty separate "videos". Only the page-world sniffer can catch the
+      playlist here, by its #EXTM3U content. The server also demands the
+      custom X-Player-Token header (and a Referer) on that playlist, so the
+      popup can only open the quality picker if the extension replays the
+      headers the page sent.
+    -->
+    <video id="player" controls></video>
+    <script>
+      (async () => {
+        // Playlist via fetch(): the sniffer wraps window.fetch.
+        const master = await (
+          await fetch("/api/stream/playlist?video=42", { headers: { "X-Player-Token": "fixture-token" } })
+        ).text();
+        // The player picks a quality and fetches its variant playlist — a
+        // second manifest that must NOT become a second row.
+        await (await fetch("/stream/720p/index.m3u8")).text();
+        // Segments via XMLHttpRequest, as an HLS library would.
+        for (const segment of ["seg0.ts", "seg1.ts"]) {
+          const xhr = new XMLHttpRequest();
+          xhr.open("GET", "/stream/720p/" + segment);
+          xhr.responseType = "arraybuffer";
+          xhr.send();
+        }
+        document.body.dataset.playlistLoaded = master.startsWith("#EXTM3U") ? "yes" : "no";
+      })();
+    </script>
+  </body>
+</html>

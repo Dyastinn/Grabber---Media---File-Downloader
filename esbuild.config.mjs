@@ -59,6 +59,7 @@ const sharedOptions = {
 const entryPoints = {
   "dist/background": "src/background/index.ts",
   "dist/content-script": "src/content/index.ts",
+  "dist/sniffer": "src/content/sniffer.ts",
   "dist/popup": "src/popup/index.ts",
   "dist/offscreen": "src/offscreen/index.ts",
 };

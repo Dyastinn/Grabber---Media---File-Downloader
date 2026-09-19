@@ -8,12 +8,17 @@ export class MediaStore {
   private readonly byTab = new Map<number, Map<string, MediaItem>>();
 
   /**
-   * Adds an item for a tab. Re-adding the same URL overwrites (e.g. once
-   * headers give us a size we didn't have before) — except that a page title
-   * already known for the URL is kept. A site extractor names an item after
-   * the video; when the player then fetches that same URL, the network watcher
-   * reports it again named after its last path segment ("master.m3u8"), and
-   * that must not win.
+   * Adds an item for a tab. The same URL is typically reported more than once
+   * — by the content script (which knows the page title and, for a master
+   * playlist, which variant playlists it references) and by the network
+   * watcher (which knows Content-Type and size, but names things after the
+   * URL's last segment). Re-adds merge: the newest facts win, except that a
+   * known title and the filename derived from it are never replaced by a
+   * generic "master.m3u8", and a known list of related URLs is never dropped.
+   *
+   * URLs that another item already accounts for — a quality alternate in its
+   * `qualitySources`, or a variant playlist in its `childUrls` — are parts of
+   * that item's stream, not items of their own, whichever order they arrive in.
    */
   add(tabId: number, item: MediaItem): void {
     let items = this.byTab.get(tabId);
@@ -21,15 +26,15 @@ export class MediaStore {
       items = new Map();
       this.byTab.set(tabId, items);
     }
-    const existing = items.get(item.url);
-    const titled = existing?.title !== undefined && item.title === undefined ? existing : undefined;
 
-    // Likewise, a quality alternate already offered by a titled row's picker
-    // (a host's per-quality manifests) must not become a second, generic row
-    // when the player fetches it.
-    if (!titled && item.title === undefined && isQualityAlternate(items, item.url)) return;
+    const merged = mergeItems(items.get(item.url), item);
 
-    items.set(item.url, titled ? { ...item, title: titled.title, filename: titled.filename } : item);
+    if (!hasChildren(merged) && isCoveredByAnother(items, merged.url)) return;
+    for (const url of childUrlsOf(merged)) {
+      if (url !== merged.url) items.delete(url);
+    }
+
+    items.set(merged.url, merged);
   }
 
   /** Returns all items found for a tab, newest first. Empty array if none. */
@@ -50,9 +55,30 @@ export class MediaStore {
   }
 }
 
-function isQualityAlternate(items: Map<string, MediaItem>, url: string): boolean {
+function mergeItems(existing: MediaItem | undefined, incoming: MediaItem): MediaItem {
+  if (!existing) return incoming;
+  const keepsTitledName = existing.title !== undefined && incoming.title === undefined;
+  return {
+    ...existing,
+    ...incoming,
+    ...(keepsTitledName && { title: existing.title, filename: existing.filename }),
+  };
+}
+
+function childUrlsOf(item: MediaItem): string[] {
+  return [
+    ...(item.qualitySources?.map((source) => source.url) ?? []),
+    ...(item.childUrls ?? []),
+  ];
+}
+
+function hasChildren(item: MediaItem): boolean {
+  return childUrlsOf(item).length > 0;
+}
+
+function isCoveredByAnother(items: Map<string, MediaItem>, url: string): boolean {
   for (const item of items.values()) {
-    if (item.qualitySources?.some((source) => source.url === url)) return true;
+    if (item.url !== url && childUrlsOf(item).includes(url)) return true;
   }
   return false;
 }

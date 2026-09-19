@@ -31,6 +31,8 @@ That's it. Open any page with media, click the Grabber icon, and the popup lists
 
 ## What it supports
 
+Detection works three ways at once: scanning the page for `<video>`/`<audio>`/links, watching the network for media and manifest responses, and — for players that hide their playlist behind an API URL with a wrong Content-Type — sniffing response bodies for `#EXTM3U`/`<MPD`. Individual stream segments are never listed; you get the stream. When a site protects its video with Referer/Origin checks or a token header, the extension replays the same request headers the page's own player sent, so the download works wherever playback does.
+
 **Direct files** — anything with a stable URL and a recognizable extension or Content-Type (mp4, webm, mp3, pdf, zip, jpg, …). Detected from both the page DOM and from actual network responses, then handed to the browser's own download manager.
 
 **Video streams** — HLS (`.m3u8`) and DASH (`.mpd`). These aren't single files: the video is split into many segments, often with audio delivered as a separate track. The extension fetches every segment, decrypts them where needed, and merges everything into one MP4 using ffmpeg compiled to WebAssembly — all inside the browser, with no companion app to install.

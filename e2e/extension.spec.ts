@@ -10,6 +10,7 @@ import { launchWithExtension, openPopup, searchDownloads } from "./helpers";
 
 const FILE_PAGE_URL = "http://localhost:8765/video-page.html";
 const STREAM_PAGE_URL = "http://localhost:8765/stream-page.html";
+const SNIFF_PAGE_URL = "http://localhost:8765/sniff-page.html";
 
 test("detects files on a page and downloads one via the popup", async () => {
   const extension = await launchWithExtension();
@@ -66,7 +67,8 @@ test("detects an HLS stream and offers its qualities in the popup", async () => 
 
     // The manifest is a stream, not a file: it lands in its own group and
     // offers a quality choice instead of an immediate download.
-    const streamRow = popup.locator(".media-row", { hasText: "master.m3u8" });
+    // Named after the page title, not the manifest's generic "master.m3u8".
+    const streamRow = popup.locator(".media-row", { hasText: "Fixture stream page.m3u8" });
     await expect(streamRow).toHaveCount(1, { timeout: 10_000 });
     expect((await popup.locator("h2").allTextContents()).join(" ")).toMatch(/Video stream/);
 
@@ -78,6 +80,39 @@ test("detects an HLS stream and offers its qualities in the popup", async () => 
     await expect(options).toHaveCount(2, { timeout: 10_000 });
     await expect(options.nth(0).locator(".quality-label")).toHaveText("720p");
     await expect(options.nth(1).locator(".quality-label")).toHaveText("360p");
+  } finally {
+    await extension.dispose();
+  }
+});
+
+test("recognises a playlist served from an extension-less text/plain URL, and hides its segments", async () => {
+  const extension = await launchWithExtension();
+
+  try {
+    const page = await extension.context.newPage();
+    await page.goto(SNIFF_PAGE_URL);
+    await expect(page.locator("body")).toHaveAttribute("data-playlist-loaded", "yes");
+    await page.waitForTimeout(1000);
+
+    const popup = await openPopup(extension, SNIFF_PAGE_URL);
+
+    // Nothing about "/api/stream/playlist?video=42" or "text/plain" says
+    // "HLS"; only the page-world sniffer's look at the body does. The row is
+    // named after the page (site suffix stripped), not "playlist".
+    const streamRow = popup.locator(".media-row", { hasText: "Fixture private-player page.m3u8" });
+    await expect(streamRow).toHaveCount(1, { timeout: 10_000 });
+    await expect(streamRow.getByRole("button", { name: "Choose quality" })).toBeVisible();
+
+    // The variant playlist the player fetched is part of that stream, not a second row.
+    await expect(popup.locator(".media-row")).toHaveCount(1);
+
+    // The player's two .ts segment requests must not appear as "Video" rows.
+    await expect(popup.locator(".media-row", { hasText: ".ts" })).toHaveCount(0);
+    expect((await popup.locator("h2").allTextContents()).join(" ")).not.toMatch(/Video \(/);
+
+    // And the sniffed URL is a real, parseable manifest: the picker works.
+    await streamRow.getByRole("button", { name: "Choose quality" }).click();
+    await expect(streamRow.locator(".quality-option")).toHaveCount(2, { timeout: 10_000 });
   } finally {
     await extension.dispose();
   }

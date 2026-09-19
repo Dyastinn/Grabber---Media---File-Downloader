@@ -19,6 +19,7 @@ import type {
   GetStreamProgressMessage,
   MediaListMessage,
   Message,
+  PrepareStreamFetchMessage,
   StreamProgressEntry,
   StreamProgressListMessage,
 } from "../shared/messages";
@@ -48,7 +49,7 @@ function getRoot(): HTMLElement {
 const root = getRoot();
 
 /** What the picker for a given manifest URL is offering, so a click can be turned back into a plan. */
-type PickerContext = { manifestUrl: string; title?: string } & (
+type PickerContext = { manifestUrl: string; sourceUrl: string; title?: string } & (
   | { kind: "hls"; variants: HlsVariant[]; audioRenditions: HlsAudioRendition[] }
   | { kind: "dash"; representations: DashRepresentation[]; audio: DashRepresentation[] }
   // One manifest per quality (see MediaItem.qualitySources): the chosen
@@ -88,8 +89,16 @@ function showProgress(entry: StreamProgressEntry): void {
   showInRow(entry.streamUrl, renderStreamProgress(entry));
 }
 
-async function fetchText(url: string): Promise<string> {
-  const response = await fetch(url);
+async function fetchText(url: string, sourceUrl: string): Promise<string> {
+  // The background worker replays the headers the page's player sent to this
+  // origin (Referer/Origin/Authorization…) on our request; without them many
+  // servers answer 403. Must be in place before the fetch starts.
+  const prepare: PrepareStreamFetchMessage = { type: "PREPARE_STREAM_FETCH", url, sourceUrl };
+  await chrome.runtime.sendMessage(prepare);
+
+  // Extension pages are a different origin from the site, so cookies are not
+  // sent by default; login-gated players need them (host_permissions allows it).
+  const response = await fetch(url, { credentials: "include" });
   if (!response.ok) throw new Error(`Couldn't load the stream manifest (HTTP ${response.status}).`);
   return response.text();
 }
@@ -106,6 +115,7 @@ async function openQualityPicker(item: MediaItem): Promise<void> {
     pickers.set(item.url, {
       kind: "hls-sources",
       manifestUrl: item.url,
+      sourceUrl: item.sourceUrl,
       ...(item.title && { title: item.title }),
       sources,
     });
@@ -119,7 +129,7 @@ async function openQualityPicker(item: MediaItem): Promise<void> {
   showInRow(item.url, renderNotice("Loading stream details..."));
 
   try {
-    const text = await fetchText(item.url);
+    const text = await fetchText(item.url, item.sourceUrl);
 
     if (item.streamKind === "dash") {
       const parsed = parseManifest(text, item.url);
@@ -132,6 +142,7 @@ async function openQualityPicker(item: MediaItem): Promise<void> {
       pickers.set(item.url, {
         kind: "dash",
         manifestUrl: item.url,
+        sourceUrl: item.sourceUrl,
         ...(item.title && { title: item.title }),
         representations,
         audio: parsed.audio,
@@ -159,6 +170,7 @@ async function openQualityPicker(item: MediaItem): Promise<void> {
       pickers.set(item.url, {
         kind: "hls",
         manifestUrl: item.url,
+        sourceUrl: item.sourceUrl,
         ...(item.title && { title: item.title }),
         variants,
         audioRenditions: master.audioRenditions,
@@ -177,6 +189,7 @@ async function openQualityPicker(item: MediaItem): Promise<void> {
     pickers.set(item.url, {
       kind: "hls",
       manifestUrl: item.url,
+      sourceUrl: item.sourceUrl,
       ...(item.title && { title: item.title }),
       variants: [soleVariant],
       audioRenditions: [],
@@ -208,6 +221,7 @@ async function startStreamDownload(url: string, index: number): Promise<void> {
     const message: DownloadStreamMessage = {
       type: "DOWNLOAD_STREAM",
       streamUrl: url,
+      sourceUrl: context.sourceUrl,
       plan: result.plan,
     };
     await chrome.runtime.sendMessage(message);
@@ -239,19 +253,19 @@ async function buildPlan(context: PickerContext, index: number): Promise<StreamP
 
     // The per-quality manifest is normally a one-variant master, but treat it
     // exactly like any other HLS manifest in case it isn't.
-    const text = await fetchText(source.url);
+    const text = await fetchText(source.url, context.sourceUrl);
     if (isMasterPlaylist(text)) {
       const master = parseMasterPlaylist(text, source.url);
       const variant = pickHighestBandwidth(master.variants);
       if (!variant) return { ok: false, reason: "This playlist didn't list any video variants." };
-      return planHlsVariant(source.url, variant, master.audioRenditions, context.title);
+      return planHlsVariant(source.url, variant, master.audioRenditions, context);
     }
-    return planHlsVariant(source.url, { url: source.url, bandwidth: 0 }, [], context.title);
+    return planHlsVariant(source.url, { url: source.url, bandwidth: 0 }, [], context);
   }
 
   const variant = context.variants[index];
   if (!variant) return { ok: false, reason: "That quality is no longer available." };
-  return planHlsVariant(context.manifestUrl, variant, context.audioRenditions, context.title);
+  return planHlsVariant(context.manifestUrl, variant, context.audioRenditions, context);
 }
 
 /** Fetches a chosen HLS variant's media playlist (and its audio rendition, if separate) and plans it. */
@@ -259,15 +273,15 @@ async function planHlsVariant(
   manifestUrl: string,
   variant: HlsVariant,
   audioRenditions: HlsAudioRendition[],
-  title: string | undefined
+  { sourceUrl, title }: { sourceUrl: string; title?: string }
 ): Promise<StreamPlanResult> {
-  const videoPlaylist = parseMediaPlaylist(await fetchText(variant.url), variant.url);
+  const videoPlaylist = parseMediaPlaylist(await fetchText(variant.url, sourceUrl), variant.url);
 
   // CMAF/fMP4 streams often deliver audio as a separate rendition that has to
   // be fetched and muxed in; simpler streams mux audio into the video segments.
   const audioRendition = pickAudioRendition(audioRenditions, variant.audioGroupId);
   const audioPlaylist = audioRendition?.url
-    ? parseMediaPlaylist(await fetchText(audioRendition.url), audioRendition.url)
+    ? parseMediaPlaylist(await fetchText(audioRendition.url, sourceUrl), audioRendition.url)
     : undefined;
 
   return planHlsDownload({

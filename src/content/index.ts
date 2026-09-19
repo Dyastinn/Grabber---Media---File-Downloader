@@ -2,8 +2,8 @@
 // reports results to the background service worker. No classification logic
 // lives here; that's all in scan.ts / shared/media-types.ts.
 
-import type { MediaFoundMessage } from "../shared/messages";
-import { extractMediaItems } from "./scan";
+import { isSnifferMessage, type MediaFoundMessage } from "../shared/messages";
+import { extractMediaItems, manifestItem, pageTitle } from "./scan";
 
 function reportFoundMedia(): void {
   const items = extractMediaItems(document, location.href);
@@ -26,3 +26,22 @@ const observer = new MutationObserver(() => {
   debounceHandle = setTimeout(reportFoundMedia, 500);
 });
 observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+
+// The page-world sniffer (sniffer.ts) recognises manifests by their content
+// and posts them here, since it has no chrome.* access of its own. Only
+// same-window messages with our marker are trusted — any script on the page
+// can call window.postMessage.
+window.addEventListener("message", (event) => {
+  if (event.source !== window || !isSnifferMessage(event.data)) return;
+  const { url, kind, childUrls } = event.data;
+  const message: MediaFoundMessage = {
+    type: "MEDIA_FOUND",
+    items: [
+      manifestItem(url, kind, location.href, Date.now(), {
+        ...(childUrls && { childUrls }),
+        ...(pageTitle(document) !== undefined && { title: pageTitle(document) }),
+      }),
+    ],
+  };
+  chrome.runtime.sendMessage(message);
+});

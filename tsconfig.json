@@ -17,5 +17,7 @@
 
     "noEmit": true
   },
-  "include": ["src", "e2e"]
+  "include": ["src", "e2e"],
+  // e2e/fixtures holds HLS .ts *segments*, which are not TypeScript.
+  "exclude": ["e2e/fixtures"]
 }

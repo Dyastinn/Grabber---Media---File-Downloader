@@ -4,7 +4,7 @@
 // Every sender and every handler imports these same types, so a shape change
 // is a compile error everywhere it's used instead of a silent runtime bug.
 
-import type { MediaItem } from "./media-types";
+import type { MediaItem, StreamKind } from "./media-types";
 import type { StreamDownloadPlan } from "./stream-plan";
 
 /** Content script -> background: items found on the page. */
@@ -41,7 +41,21 @@ export interface DownloadStreamMessage {
   type: "DOWNLOAD_STREAM";
   /** The manifest URL — identifies this download in progress updates. */
   streamUrl: string;
+  /** The page the stream was found on; used for Referer/Origin when no player request was observed. */
+  sourceUrl: string;
   plan: StreamDownloadPlan;
+}
+
+/**
+ * Popup -> background: "I am about to fetch this URL from the extension;
+ * make sure the site's request headers will be replayed on it." Answered
+ * (with no payload) once the declarativeNetRequest rule is in place. See
+ * background/request-headers.ts for why.
+ */
+export interface PrepareStreamFetchMessage {
+  type: "PREPARE_STREAM_FETCH";
+  url: string;
+  sourceUrl: string;
 }
 
 /**
@@ -127,6 +141,7 @@ export type Message =
   | MediaListMessage
   | DownloadMessage
   | DownloadStreamMessage
+  | PrepareStreamFetchMessage
   | ExecuteStreamPlanMessage
   | StreamProgressMessage
   | SaveStreamFileMessage
@@ -135,3 +150,34 @@ export type Message =
   | StreamErrorMessage
   | GetStreamProgressMessage
   | StreamProgressListMessage;
+
+// ---------------------------------------------------------------------------
+// Page-world -> content-script bridge. This one does NOT travel over
+// chrome.runtime: the sniffer (content/sniffer.ts) runs in the page's MAIN
+// world with no chrome.* access, so it uses window.postMessage, and
+// content/index.ts filters incoming window messages by `source` before
+// trusting them (any page script can post to window).
+// ---------------------------------------------------------------------------
+export const SNIFFER_MESSAGE_SOURCE = "grabber-manifest-sniffer";
+
+/** Sniffer -> content script: "this response body was an HLS/DASH manifest." */
+export interface SnifferMessage {
+  source: typeof SNIFFER_MESSAGE_SOURCE;
+  url: string;
+  kind: StreamKind;
+  /** For an HLS master: the variant/rendition playlist URLs it lists (see MediaItem.childUrls). */
+  childUrls?: string[];
+}
+
+export function isSnifferMessage(data: unknown): data is SnifferMessage {
+  if (typeof data !== "object" || data === null) return false;
+  const candidate = data as Record<string, unknown>;
+  const childUrls = candidate["childUrls"];
+  return (
+    candidate["source"] === SNIFFER_MESSAGE_SOURCE &&
+    typeof candidate["url"] === "string" &&
+    (candidate["kind"] === "hls" || candidate["kind"] === "dash") &&
+    (childUrls === undefined ||
+      (Array.isArray(childUrls) && childUrls.every((url) => typeof url === "string")))
+  );
+}

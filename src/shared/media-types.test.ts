@@ -3,6 +3,8 @@ import {
   classifyByContentType,
   classifyByUrl,
   classifyMedia,
+  isStreamSegment,
+  sniffManifestKind,
   classifyStreamKind,
   getUrlExtension,
 } from "./media-types";
@@ -108,5 +110,44 @@ describe("classifyStreamKind", () => {
 
   it("returns null for regular media files", () => {
     expect(classifyStreamKind("https://example.com/video.mp4", "video/mp4")).toBeNull();
+  });
+});
+
+describe("sniffManifestKind", () => {
+  it("recognises an HLS playlist by its #EXTM3U header", () => {
+    expect(sniffManifestKind("#EXTM3U\n#EXT-X-VERSION:3\n")).toBe("hls");
+    expect(sniffManifestKind("\n  #EXTM3U\n")).toBe("hls");
+  });
+
+  it("ignores a UTF-8 BOM", () => {
+    expect(sniffManifestKind(String.fromCharCode(0xfeff) + "#EXTM3U\n")).toBe("hls");
+  });
+
+  it("recognises a DASH MPD, with or without an XML declaration", () => {
+    expect(sniffManifestKind('<?xml version="1.0"?>\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011">')).toBe("dash");
+    expect(sniffManifestKind("<MPD>")).toBe("dash");
+  });
+
+  it("returns null for anything else", () => {
+    expect(sniffManifestKind('{"playlist":"#EXTM3U"}')).toBeNull();
+    expect(sniffManifestKind("<html><body>#EXTM3U</body></html>")).toBeNull();
+    expect(sniffManifestKind("")).toBeNull();
+  });
+});
+
+describe("isStreamSegment", () => {
+  it("flags .ts and .m4s segment files", () => {
+    expect(isStreamSegment("https://cdn.example.com/hls/video66.ts")).toBe(true);
+    expect(isStreamSegment("https://cdn.example.com/dash/seg-1.m4s?token=x")).toBe(true);
+  });
+
+  it("flags MPEG-TS / ISO segment content types on extension-less URLs", () => {
+    expect(isStreamSegment("https://cdn.example.com/seg/66", "video/mp2t")).toBe(true);
+    expect(isStreamSegment("https://cdn.example.com/seg/66", "video/iso.segment")).toBe(true);
+  });
+
+  it("leaves whole files alone", () => {
+    expect(isStreamSegment("https://cdn.example.com/clip.mp4", "video/mp4")).toBe(false);
+    expect(isStreamSegment("https://cdn.example.com/master.m3u8")).toBe(false);
   });
 });

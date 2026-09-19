@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractMediaItems } from "./scan";
+import { extractMediaItems, manifestItem, pageTitle } from "./scan";
 
 const PAGE_URL = "https://example.com/page";
 
@@ -70,5 +70,74 @@ describe("extractMediaItems", () => {
   it("returns an empty list when nothing matches", () => {
     const doc = docFromHtml(`<p>No media here.</p>`);
     expect(extractMediaItems(doc, PAGE_URL)).toEqual([]);
+  });
+});
+
+describe("manifestItem", () => {
+  it("builds a stream item for a manifest the sniffer recognised, whatever its URL looks like", () => {
+    const item = manifestItem("https://api.example.com/stream/1234?token=abc", "hls", PAGE_URL, 7);
+    expect(item).toEqual({
+      url: "https://api.example.com/stream/1234?token=abc",
+      category: "stream",
+      streamKind: "hls",
+      filename: "1234",
+      sourceUrl: PAGE_URL,
+      detectedAt: 7,
+    });
+  });
+});
+
+describe("pageTitle", () => {
+  function docWithHead(head: string): Document {
+    return new DOMParser().parseFromString(`<html><head>${head}</head><body></body></html>`, "text/html");
+  }
+
+  it("prefers og:title", () => {
+    const doc = docWithHead(`<title>Clip - Site</title><meta property="og:title" content="The Clip">`);
+    expect(pageTitle(doc)).toBe("The Clip");
+  });
+
+  it("strips a short trailing site name from the document title", () => {
+    expect(pageTitle(docWithHead(`<title>How To Chop Wood | WoodTube</title>`))).toBe("How To Chop Wood");
+    expect(pageTitle(docWithHead(`<title>How To Chop Wood - Wood Tube</title>`))).toBe("How To Chop Wood");
+    expect(pageTitle(docWithHead(`<title>Part 1 - Part 2 – Site</title>`))).toBe("Part 1 - Part 2");
+  });
+
+  it("keeps a title whose last segment is too long to be a site name, and one with no separator", () => {
+    const long = "A" .repeat(50);
+    expect(pageTitle(docWithHead(`<title>Intro - ${long}</title>`))).toBe(`Intro - ${long}`);
+    expect(pageTitle(docWithHead(`<title>Just a title</title>`))).toBe("Just a title");
+  });
+
+  it("returns undefined for an untitled page", () => {
+    expect(pageTitle(docWithHead(``))).toBeUndefined();
+  });
+});
+
+describe("manifestItem with page context", () => {
+  it("names the stream after the page and carries the master's child URLs", () => {
+    const item = manifestItem("https://api.example.com/stream/1234", "hls", PAGE_URL, 7, {
+      title: "Chop Wood: part 1/2",
+      childUrls: ["https://cdn.example.com/720p/video.m3u8"],
+    });
+    expect(item).toMatchObject({
+      filename: "Chop Wood part 1 2.m3u8",
+      title: "Chop Wood: part 1/2",
+      childUrls: ["https://cdn.example.com/720p/video.m3u8"],
+    });
+  });
+
+  it("names DOM-scanned streams after the page too, but not plain files", () => {
+    const doc = new DOMParser().parseFromString(
+      `<html><head><title>Lecture 3 | Uni</title></head><body>
+        <video src="https://cdn.example.com/lec/master.m3u8"></video>
+        <a href="https://cdn.example.com/notes.pdf">Notes</a>
+      </body></html>`,
+      "text/html"
+    );
+    const items = extractMediaItems(doc, PAGE_URL);
+    expect(items.find((item) => item.category === "stream")).toMatchObject({ filename: "Lecture 3.m3u8", title: "Lecture 3" });
+    expect(items.find((item) => item.category === "document")).toMatchObject({ filename: "notes.pdf" });
+    expect(items.find((item) => item.category === "document")?.title).toBeUndefined();
   });
 });

@@ -117,3 +117,34 @@ describe("MediaStore", () => {
     expect(store.list(2)).toHaveLength(1);
   });
 });
+
+describe("MediaStore — related URLs", () => {
+  const master = "https://cdn.example.com/v/playlist.m3u8";
+  const v720 = "https://cdn.example.com/v/720p/video.m3u8";
+  const v480 = "https://cdn.example.com/v/480p/video.m3u8";
+
+  it("folds a master's variant playlists into it, whichever order they are reported in", () => {
+    const store = new MediaStore();
+    // Variant seen first (network watcher), then the master (sniffer, with childUrls).
+    store.add(1, makeItem({ url: v720, category: "stream", filename: "video.m3u8" }));
+    store.add(1, makeItem({ url: master, category: "stream", filename: "My Video.m3u8", title: "My Video", childUrls: [v720, v480] }));
+    // Then the other variant.
+    store.add(1, makeItem({ url: v480, category: "stream", filename: "video.m3u8" }));
+
+    expect(store.list(1).map((item) => item.url)).toEqual([master]);
+  });
+
+  it("keeps childUrls and qualitySources when the network watcher re-reports the same URL", () => {
+    const store = new MediaStore();
+    store.add(1, makeItem({ url: master, category: "stream", filename: "My Video.m3u8", title: "My Video", childUrls: [v720], qualitySources: [{ url: v720, height: 720 }] }));
+    store.add(1, makeItem({ url: master, category: "stream", filename: "playlist.m3u8", contentType: "text/plain" }));
+
+    expect(store.list(1)[0]).toMatchObject({
+      filename: "My Video.m3u8",
+      title: "My Video",
+      childUrls: [v720],
+      qualitySources: [{ url: v720, height: 720 }],
+      contentType: "text/plain",
+    });
+  });
+});

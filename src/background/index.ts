@@ -9,7 +9,7 @@
 // instead of top-level variables we'd expect to persist forever: if the
 // worker restarts, a fresh page scan repopulates it, which is fine for v0.1.
 
-import { classifyMedia, type MediaItem } from "../shared/media-types";
+import { classifyMedia, isStreamSegment, type MediaItem } from "../shared/media-types";
 import { guessFilename } from "../shared/filename";
 import type {
   Message,
@@ -19,10 +19,20 @@ import type {
 } from "../shared/messages";
 import type { StreamDownloadPlan } from "../shared/stream-plan";
 import { MediaStore } from "./media-store";
+import {
+  buildHeaderRule,
+  fallbackHeaders,
+  originOf,
+  RequestHeaderStore,
+  type HeaderMap,
+} from "./request-headers";
 import { StreamProgressStore } from "./stream-progress-store";
 
 const store = new MediaStore();
 const streamProgress = new StreamProgressStore();
+const requestHeaders = new RequestHeaderStore();
+
+const WATCHED_REQUEST_TYPES: chrome.webRequest.ResourceType[] = ["media", "xmlhttprequest", "object", "other"];
 
 // ---------------------------------------------------------------------------
 // 1. Network layer: catch media/files the page loads directly (e.g. a
@@ -43,6 +53,10 @@ chrome.webRequest.onHeadersReceived.addListener(
     const contentType = findHeader(headers, "content-type");
     const contentLength = findHeader(headers, "content-length");
     const contentDisposition = findHeader(headers, "content-disposition");
+
+    // A player fetches dozens of segments a minute; those are parts of a
+    // stream (listed under its manifest), not thirty separate videos.
+    if (isStreamSegment(details.url, contentType)) return;
 
     const classification = classifyMedia(details.url, contentType);
     if (!classification) return;
@@ -65,9 +79,86 @@ chrome.webRequest.onHeadersReceived.addListener(
     store.add(details.tabId, item);
     updateBadge(details.tabId);
   },
-  { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "object", "other"] },
+  { urls: ["<all_urls>"], types: WATCHED_REQUEST_TYPES },
   ["responseHeaders"]
 );
+
+// ---------------------------------------------------------------------------
+// 1b. Remember the request headers the page sends to each origin (Referer,
+//     Origin, Authorization, custom tokens…). The popup and offscreen document
+//     fetch from the extension's own origin, and servers that check those
+//     headers answer 403 unless we replay them — see request-headers.ts.
+//     Every fetch-style request counts, not just ones that look like media:
+//     the playlist that needs the token is often exactly the one whose URL
+//     says nothing (/api/stream/1234). "extraHeaders" is what makes
+//     Referer/Origin visible in Chrome; Firefox doesn't know the option,
+//     hence the fallback.
+// ---------------------------------------------------------------------------
+function rememberRequestHeaders(details: chrome.webRequest.WebRequestHeadersDetails): void {
+  if (details.tabId < 0 || !details.requestHeaders) return;
+  if (requestHeaders.record(details.url, details.requestHeaders)) {
+    void installHeaderRule(details.url, requestHeaders.get(details.url) ?? {});
+  }
+}
+try {
+  chrome.webRequest.onSendHeaders.addListener(
+    rememberRequestHeaders,
+    { urls: ["<all_urls>"], types: WATCHED_REQUEST_TYPES },
+    ["requestHeaders", "extraHeaders"]
+  );
+} catch {
+  chrome.webRequest.onSendHeaders.addListener(
+    rememberRequestHeaders,
+    { urls: ["<all_urls>"], types: WATCHED_REQUEST_TYPES },
+    ["requestHeaders"]
+  );
+}
+
+/** What each origin's session rule currently sets, so unchanged headers don't rewrite it. */
+const installedRules = new Map<string, string>();
+
+/** Makes the extension's own requests to `url`'s origin carry `headers`. No-op where declarativeNetRequest is unavailable (Firefox < 113). */
+async function installHeaderRule(url: string, headers: HeaderMap): Promise<void> {
+  const origin = originOf(url);
+  if (!origin || Object.keys(headers).length === 0 || !chrome.declarativeNetRequest) return;
+
+  const rule = buildHeaderRule(origin, headers);
+  const fingerprint = JSON.stringify(headers);
+  if (installedRules.get(origin) === fingerprint) return;
+  installedRules.set(origin, fingerprint);
+
+  try {
+    // Session rules survive a service-worker restart but not a browser
+    // restart; removing the id first makes this an upsert either way.
+    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [rule.id], addRules: [rule] });
+  } catch (error) {
+    installedRules.delete(origin);
+    console.warn("Couldn't install request-header rule for", origin, error);
+  }
+}
+
+/** Rule for a URL about to be fetched: the player's recorded headers, else Referer/Origin from the page. */
+function prepareFetch(url: string, sourceUrl: string): Promise<void> {
+  return installHeaderRule(url, requestHeaders.get(url) ?? fallbackHeaders(sourceUrl));
+}
+
+/** Every distinct origin a plan will fetch from — segments, init segments and decryption keys. */
+function planOrigins(plan: StreamDownloadPlan): Set<string> {
+  const origins = new Set<string>();
+  const add = (url: string | undefined): void => {
+    const origin = url && originOf(url);
+    if (origin) origins.add(origin);
+  };
+  for (const track of [plan.video, plan.audio]) {
+    if (!track) continue;
+    add(track.initUrl);
+    for (const segment of track.segments) {
+      add(segment.url);
+      add(segment.decryption?.keyUrl);
+    }
+  }
+  return origins;
+}
 
 function findHeader(headers: chrome.webRequest.HttpHeader[], name: string): string | undefined {
   return headers.find((h) => h.name.toLowerCase() === name)?.value;
@@ -116,8 +207,13 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       // popup disables the button, but it can be reopened mid-download.
       if (streamProgress.isActive(message.streamUrl)) break;
       streamProgress.update(message.streamUrl, "fetching", 0);
-      void startStreamDownload(message.streamUrl, message.plan);
+      void startStreamDownload(message.streamUrl, message.sourceUrl, message.plan);
       break;
+    }
+
+    case "PREPARE_STREAM_FETCH": {
+      void prepareFetch(message.url, message.sourceUrl).then(() => sendResponse(undefined));
+      return true;
     }
 
     // The offscreen document broadcasts these; the popup listens for them too,
@@ -156,7 +252,8 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
     }
   }
   // GET_MEDIA and GET_STREAM_PROGRESS answer synchronously; only the
-  // SAVE_STREAM_FILE branch returns true to keep its sendResponse alive.
+  // SAVE_STREAM_FILE and PREPARE_STREAM_FETCH branches return true to keep
+  // their sendResponse alive.
   return false;
 });
 
@@ -164,8 +261,17 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
 // 4. Stream downloads: ffmpeg.wasm can't run in a service worker, so the work
 //    happens in an offscreen document that this worker creates on demand.
 // ---------------------------------------------------------------------------
-async function startStreamDownload(streamUrl: string, plan: StreamDownloadPlan): Promise<void> {
+async function startStreamDownload(
+  streamUrl: string,
+  sourceUrl: string,
+  plan: StreamDownloadPlan
+): Promise<void> {
   try {
+    // The offscreen document's segment fetches need the same headers the
+    // player sent (the segment CDN is often a different origin from the manifest).
+    await Promise.all(
+      [...planOrigins(plan)].map((origin) => prepareFetch(`${origin}/`, sourceUrl))
+    );
     await ensureOffscreenDocument();
     await chrome.runtime.sendMessage({ type: "EXECUTE_STREAM_PLAN", streamUrl, plan });
   } catch (error) {
