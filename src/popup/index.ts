@@ -37,6 +37,8 @@ import {
   renderNotice,
   renderQualityOptions,
   renderStreamProgress,
+  formatFoundCount,
+  weightRungs,
   type QualityOption,
 } from "./render";
 
@@ -69,6 +71,9 @@ async function loadAndRender(): Promise<void> {
   items = response.items;
 
   root.replaceChildren(renderList(items));
+
+  const count = document.getElementById("found-count");
+  if (count) count.textContent = formatFoundCount(items.length);
 
   // A stream download keeps running after the popup closes, so show where any
   // in-flight download got to rather than offering to start it again.
@@ -121,7 +126,8 @@ async function openQualityPicker(item: MediaItem): Promise<void> {
     });
     showOptions(
       item.url,
-      sources.map((source) => ({ label: describeQuality(source.height, 0) }))
+      sources.map((source) => ({ label: describeQuality(source.height, 0) })),
+      sources.map((source) => source.height)
     );
     return;
   }
@@ -152,7 +158,8 @@ async function openQualityPicker(item: MediaItem): Promise<void> {
         representations.map((rep) => ({
           label: describeQuality(rep.height, rep.bandwidth),
           detail: rep.width && rep.height ? `${rep.width}x${rep.height}` : undefined,
-        }))
+        })),
+        representations.map((rep) => rep.bandwidth || rep.height)
       );
       return;
     }
@@ -180,7 +187,8 @@ async function openQualityPicker(item: MediaItem): Promise<void> {
         variants.map((variant) => ({
           label: describeQuality(variant.resolution?.height, variant.bandwidth),
           detail: `${Math.round(variant.bandwidth / 1000)} kbps`,
-        }))
+        })),
+        variants.map((variant) => variant.bandwidth || variant.resolution?.height)
       );
       return;
     }
@@ -200,8 +208,23 @@ async function openQualityPicker(item: MediaItem): Promise<void> {
   }
 }
 
-function showOptions(url: string, options: QualityOption[]): void {
-  showInRow(url, renderQualityOptions(options));
+/**
+ * Shows the quality ladder. `magnitudes` is whatever the manifest gave us to
+ * size each rung's bar by — bitrate where there is one, resolution height as
+ * a stand-in, undefined where there is neither. `weightRungs` decides whether
+ * the ladder gets bars at all.
+ */
+function showOptions(
+  url: string,
+  options: QualityOption[],
+  magnitudes: (number | undefined)[] = []
+): void {
+  const weights = weightRungs(options.map((_, index) => magnitudes[index]));
+  const rungs = options.map((option, index) => {
+    const weight = weights[index];
+    return weight === undefined ? option : { ...option, weight };
+  });
+  showInRow(url, renderQualityOptions(rungs));
 }
 
 /** Turns the user's quality choice into a plan and hands it to the background worker. */

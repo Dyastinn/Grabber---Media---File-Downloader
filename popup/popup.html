@@ -6,11 +6,12 @@
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <header>
+    <header class="masthead">
       <h1>Grabber</h1>
+      <span class="found-count" id="found-count" aria-live="polite"></span>
     </header>
     <div id="root">
-      <p class="empty-state">Loading...</p>
+      <p class="empty-state">Looking for media on this page...</p>
     </div>
     <script src="../dist/popup.js"></script>
   </body>

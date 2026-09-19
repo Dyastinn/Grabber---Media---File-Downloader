@@ -1,6 +1,35 @@
+/* Monochrome. Ink on ground in both modes, nothing else — hierarchy comes
+   from weight, size and space, and the only thing that draws is the quality
+   ladder, where the bar length is information. Status (saved / failed) is
+   said in words, not colour. */
+
 :root {
   color-scheme: light dark;
-  font-family: system-ui, sans-serif;
+
+  --ground: #fafafa;
+  --ink: #171717;
+  --muted: #6f6f6f;
+  --line: rgba(0, 0, 0, 0.1);
+  --hover: rgba(0, 0, 0, 0.05);
+  --wash: rgba(0, 0, 0, 0.07);
+
+  --ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, system-ui, sans-serif;
+  /* Filenames only: a path needs 1/l/0/O to be tellable apart. */
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", "Roboto Mono", monospace;
+
+  font-family: var(--ui);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #141414;
+    --ink: #ececec;
+    --muted: #9a9a9a;
+    --line: rgba(255, 255, 255, 0.12);
+    --hover: rgba(255, 255, 255, 0.06);
+    --wash: rgba(255, 255, 255, 0.09);
+  }
 }
 
 body {
@@ -8,58 +37,79 @@ body {
   max-height: 480px;
   overflow-y: auto;
   margin: 0;
-  padding: 0 12px 12px;
+  padding: 0 0 12px;
+  background: var(--ground);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.4;
 }
 
-header {
+/* Header ------------------------------------------------------------- */
+
+.masthead {
   position: sticky;
   top: 0;
-  background: Canvas;
-  padding: 10px 0 6px;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  background: var(--ground);
+  border-bottom: 1px solid var(--line);
 }
 
 h1 {
   font-size: 15px;
+  font-weight: 600;
   margin: 0;
 }
 
+.found-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.found-count:empty {
+  display: none;
+}
+
+/* Groups and rows ----------------------------------------------------- */
+
 .media-group {
-  margin-bottom: 12px;
+  padding: 10px 16px 0;
 }
 
 .media-group h2 {
   font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: GrayText;
-  margin: 0 0 6px;
+  font-weight: 500;
+  color: var(--muted);
+  margin: 0 0 4px;
 }
 
 .media-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 
-/* Neutral translucent grey rather than color-mix(): reads correctly in both
-   light and dark themes, and works on the oldest browsers we support. */
+/* Rows are separated by a single hairline, nothing else. */
 .media-row {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 6px 8px;
-  border: 1px solid rgba(128, 128, 128, 0.35);
-  border-radius: 6px;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.media-row:first-child {
+  border-top: 0;
 }
 
 .media-main {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 12px;
 }
 
 .row-extra:empty {
@@ -69,11 +119,14 @@ h1 {
 .media-info {
   display: flex;
   flex-direction: column;
+  gap: 2px;
   min-width: 0;
 }
 
 .media-filename {
-  font-size: 13px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -81,100 +134,159 @@ h1 {
 
 .media-size {
   font-size: 11px;
-  color: GrayText;
+  color: var(--muted);
 }
+
+/* Actions ------------------------------------------------------------- */
 
 .download-btn,
 .quality-btn {
   flex-shrink: 0;
+  min-height: 30px;
+  padding: 0 12px;
+  font-family: var(--ui);
   font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 4px;
-  border: 1px solid rgba(128, 128, 128, 0.5);
-  background: Canvas;
-  color: CanvasText;
+  font-weight: 500;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: var(--ink);
+  color: var(--ground);
   cursor: pointer;
 }
 
-.download-btn:hover,
-.quality-btn:hover {
-  background: rgba(128, 128, 128, 0.15);
+.quality-btn {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line);
 }
+
+.download-btn:hover { opacity: 0.85; }
+.quality-btn:hover { background: var(--hover); }
+
+:is(.download-btn, .quality-btn, .quality-option):focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* The ladder ---------------------------------------------------------- */
+/* Rungs stack tallest-first. Each carries a bar whose length is its bitrate
+   relative to the top rung, so the shape of the list is the shape of the
+   bitrate ladder. Without --weight nothing paints and the rung is a plain
+   row. */
 
 .quality-options {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .quality-option {
+  position: relative;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  border: 1px solid rgba(128, 128, 128, 0.5);
-  background: Canvas;
-  color: CanvasText;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--ui);
+  text-align: left;
   cursor: pointer;
+  overflow: hidden;
+}
+
+/* The bar sits behind the text so a long detail string can't squeeze it. */
+.quality-option[style*="--weight"]::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(var(--weight) * 100%);
+  background: var(--wash);
+  border-radius: 6px;
 }
 
 .quality-option:hover {
-  background: rgba(128, 128, 128, 0.15);
+  background: var(--hover);
 }
 
 .quality-label {
-  font-size: 12px;
+  position: relative;
+  font-size: 14px;
   font-weight: 600;
+  min-width: 3.4em;
 }
 
 .quality-detail {
-  font-size: 10px;
-  color: GrayText;
+  position: relative;
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: auto;
 }
+
+/* Progress ------------------------------------------------------------ */
 
 .stream-progress {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
-.progress-label {
-  font-size: 11px;
-  color: GrayText;
+.progress-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.progress-percent {
+  color: var(--ink);
 }
 
 .progress-track {
-  height: 4px;
+  height: 3px;
   border-radius: 2px;
-  background: rgba(128, 128, 128, 0.3);
+  background: var(--line);
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
-  background: #2563eb;
+  background: var(--ink);
   transition: width 0.2s ease;
 }
 
-.stream-progress-done .progress-fill {
-  background: #16a34a;
+/* Saved and failed are stated in the label; weight is the only emphasis. */
+.stream-progress-done .progress-label,
+.stream-progress-error .progress-label {
+  color: var(--ink);
+  font-weight: 500;
 }
 
 .row-notice {
   margin: 0;
-  font-size: 11px;
-  color: GrayText;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
 }
 
-.stream-progress-error .progress-label {
-  color: #dc2626;
-}
+/* Empty state --------------------------------------------------------- */
 
 .empty-state {
   font-size: 13px;
-  color: GrayText;
+  line-height: 1.5;
+  color: var(--muted);
+  margin: 0;
+  padding: 36px 28px;
   text-align: center;
-  padding: 24px 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }
