@@ -12,5 +12,7 @@
       to exercise the extension's detection path.
     -->
     <video src="/stream/master.m3u8" controls></video>
+    <!-- A manifest nothing is listening on: exercises the failure diagnostics. -->
+    <a href="http://localhost:8766/dead.m3u8">Dead stream</a>
   </body>
 </html>

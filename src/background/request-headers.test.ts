@@ -34,6 +34,9 @@ describe("replayableHeaders", () => {
         { name: "User-Agent", value: "UA" },
         { name: "Sec-Fetch-Mode", value: "cors" },
         { name: "Content-Length", value: "0" },
+        { name: "X-HTTP-Method-Override", value: "DELETE" },
+        { name: "Access-Control-Request-Method", value: "GET" },
+        { name: "Access-Control-Request-Headers", value: "x-player-token" },
         { name: "Nameless" },
       ])
     ).toEqual({});
@@ -117,10 +120,12 @@ describe("buildHeaderRule", () => {
     const rule = buildHeaderRule("https://cdn.example.com", {
       referer: "https://site.example/",
       "x-token": "abc",
-    });
+    }, "abcdefghijklmnop");
     expect(rule.id).toBe(ruleIdFor("https://cdn.example.com"));
     expect(rule.condition.urlFilter).toBe("|https://cdn.example.com/");
     expect(rule.condition.resourceTypes).toEqual(["xmlhttprequest", "media", "other"]);
+    // Only requests initiated by the extension itself — never the site's own.
+    expect(rule.condition.initiatorDomains).toEqual(["abcdefghijklmnop"]);
     expect(rule.action.type).toBe("modifyHeaders");
     expect(rule.action.requestHeaders).toEqual([
       { header: "Referer", operation: "set", value: "https://site.example/" },

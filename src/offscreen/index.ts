@@ -16,7 +16,8 @@ import type {
   StreamPhase,
   StreamProgressMessage,
 } from "../shared/messages";
-import { countPlannedFetches, type PlannedTrack, type StreamDownloadPlan } from "../shared/stream-plan";
+import { countPlannedFetches, hexToBytes, type PlannedTrack, type StreamDownloadPlan } from "../shared/stream-plan";
+import { fetchWithCredentialFallback } from "../shared/fetch-with-fallback";
 import { decryptSegment, importAesKey } from "./decrypt";
 import { muxToMp4, type MuxInput } from "./ffmpeg-runner";
 
@@ -33,6 +34,7 @@ chrome.runtime.onMessage.addListener((message: Message) => {
         type: "STREAM_ERROR",
         streamUrl: message.streamUrl,
         message: error instanceof Error ? error.message : String(error),
+        ...(error instanceof FetchFailure && { failedUrl: error.url }),
       });
     });
   }
@@ -120,7 +122,7 @@ async function downloadTrack(
 
     if (segment.decryption) {
       const key = await getKey(segment.decryption.keyUrl, keyCache);
-      bytes = await decryptSegment(bytes, key, segment.decryption.iv);
+      bytes = await decryptSegment(bytes, key, hexToBytes(segment.decryption.ivHex));
     }
 
     parts[offset + index] = bytes;
@@ -140,13 +142,24 @@ function getKey(keyUrl: string, cache: Map<string, Promise<CryptoKey>>): Promise
   return key;
 }
 
-async function fetchBytes(url: string): Promise<Uint8Array> {
-  // Extension pages are a different origin from the site, so cookies are not
-  // sent by default; login-gated players need them (host_permissions allows it).
-  const response = await fetch(url, { credentials: "include" });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch ${url} (HTTP ${response.status}).`);
+/** A failed segment/key/init fetch, keeping the URL so the failure can be diagnosed. */
+class FetchFailure extends Error {
+  constructor(
+    readonly url: string,
+    detail: string
+  ) {
+    super(`Failed to fetch ${url} (${detail}).`);
   }
+}
+
+async function fetchBytes(url: string): Promise<Uint8Array> {
+  let response: Response;
+  try {
+    response = await fetchWithCredentialFallback(url);
+  } catch (error) {
+    throw new FetchFailure(url, error instanceof Error ? error.message : String(error));
+  }
+  if (!response.ok) throw new FetchFailure(url, `HTTP ${response.status}`);
   return new Uint8Array(await response.arrayBuffer());
 }
 

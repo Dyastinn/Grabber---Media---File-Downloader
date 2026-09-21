@@ -4,6 +4,7 @@
 // Every sender and every handler imports these same types, so a shape change
 // is a compile error everywhere it's used instead of a silent runtime bug.
 
+import type { FetchDiagnostic } from "../background/diagnostics";
 import type { MediaItem, StreamKind } from "./media-types";
 import type { StreamDownloadPlan } from "./stream-plan";
 
@@ -43,7 +44,40 @@ export interface DownloadStreamMessage {
   streamUrl: string;
   /** The page the stream was found on; used for Referer/Origin when no player request was observed. */
   sourceUrl: string;
+  /** The tab showing that page — where failure diagnostics get logged. */
+  tabId: number;
   plan: StreamDownloadPlan;
+}
+
+/**
+ * Popup -> background: "my fetch of this URL failed." The background enriches
+ * it with the browser's real network error and logs a diagnostic into the
+ * tab's console (DiagnosticMessage) — the only place a user will look.
+ */
+export interface ReportFetchFailureMessage {
+  type: "REPORT_FETCH_FAILURE";
+  tabId: number;
+  url: string;
+  error: string;
+}
+
+/** Background -> content script: "print this in the page console." */
+export interface DiagnosticMessage {
+  type: "DIAGNOSTIC";
+  diagnostic: FetchDiagnostic;
+}
+
+/**
+ * Content script -> background: "the page fetched this URL with these
+ * JS-set request headers." A second source for header replay next to the
+ * background's own webRequest observation, which can miss a page's very
+ * first request while the service worker is still starting up — and that
+ * first request is typically the manifest carrying the token.
+ */
+export interface RequestHeadersSeenMessage {
+  type: "REQUEST_HEADERS_SEEN";
+  url: string;
+  headers: Record<string, string>;
 }
 
 /**
@@ -115,6 +149,8 @@ export interface StreamErrorMessage {
   type: "STREAM_ERROR";
   streamUrl: string;
   message: string;
+  /** The segment/key/init URL whose fetch failed, when that is what went wrong. */
+  failedUrl?: string;
 }
 
 /** Popup -> background: "is a stream download already running for this tab?" */
@@ -142,6 +178,9 @@ export type Message =
   | DownloadMessage
   | DownloadStreamMessage
   | PrepareStreamFetchMessage
+  | ReportFetchFailureMessage
+  | DiagnosticMessage
+  | RequestHeadersSeenMessage
   | ExecuteStreamPlanMessage
   | StreamProgressMessage
   | SaveStreamFileMessage
@@ -159,6 +198,13 @@ export type Message =
 // trusting them (any page script can post to window).
 // ---------------------------------------------------------------------------
 export const SNIFFER_MESSAGE_SOURCE = "grabber-manifest-sniffer";
+/**
+ * Content script -> sniffer (window.postMessage): "I am listening now." The
+ * sniffer runs at document_start, the content script at document_idle; a
+ * manifest fetched in between would be posted to nobody, so the sniffer
+ * queues until it hears this.
+ */
+export const SNIFFER_LISTENER_READY = "grabber-manifest-listener-ready";
 
 /** Sniffer -> content script: "this response body was an HLS/DASH manifest." */
 export interface SnifferMessage {
@@ -167,17 +213,34 @@ export interface SnifferMessage {
   kind: StreamKind;
   /** For an HLS master: the variant/rendition playlist URLs it lists (see MediaItem.childUrls). */
   childUrls?: string[];
+  /**
+   * The JS-set request headers the page used to fetch this manifest
+   * (Authorization, custom tokens…), lower-cased. The background replays
+   * these on the extension's own fetches; see RequestHeadersSeenMessage.
+   */
+  requestHeaders?: Record<string, string>;
 }
 
 export function isSnifferMessage(data: unknown): data is SnifferMessage {
   if (typeof data !== "object" || data === null) return false;
   const candidate = data as Record<string, unknown>;
   const childUrls = candidate["childUrls"];
+  const requestHeaders = candidate["requestHeaders"];
   return (
     candidate["source"] === SNIFFER_MESSAGE_SOURCE &&
     typeof candidate["url"] === "string" &&
     (candidate["kind"] === "hls" || candidate["kind"] === "dash") &&
     (childUrls === undefined ||
-      (Array.isArray(childUrls) && childUrls.every((url) => typeof url === "string")))
+      (Array.isArray(childUrls) && childUrls.every((url) => typeof url === "string"))) &&
+    (requestHeaders === undefined || isStringRecord(requestHeaders))
+  );
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((entry) => typeof entry === "string")
   );
 }

@@ -42,6 +42,7 @@ export async function launchWithExtension(): Promise<LoadedExtension> {
 
   let [worker] = context.serviceWorkers();
   worker ??= await context.waitForEvent("serviceworker");
+  worker.on("console", (message) => logs.push(`[${message.type()}] background: ${message.text()}`));
 
   return {
     context,

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { DashRepresentation } from "./dash-manifest";
 import type { HlsAudioRendition, HlsMediaPlaylist, HlsVariant } from "./hls-playlist";
 import {
+  bytesToHex,
   countPlannedFetches,
+  hexToBytes,
   describeQuality,
   pickAudioRendition,
   pickHighestBandwidth,
@@ -153,7 +155,9 @@ describe("planHlsDownload", () => {
     const decryption = result.plan.video.segments[0]?.decryption;
     expect(decryption?.keyUrl).toBe("https://cdn.example.com/key.bin");
     // no explicit IV in the playlist -> derived from sequence number 5
-    expect([...(decryption?.iv ?? [])].slice(8)).toEqual([0, 0, 0, 0, 0, 0, 0, 5]);
+    expect(decryption?.ivHex).toBe("00000000000000000000000000000005");
+    // Must survive the JSON round-trip a plan takes through chrome.runtime.sendMessage.
+    expect(JSON.parse(JSON.stringify(result.plan))).toEqual(result.plan);
   });
 
   it("plans a separate audio track when the variant references one", () => {
@@ -255,5 +259,14 @@ describe("countPlannedFetches", () => {
     });
     if (!result.ok) throw new Error("expected a plan");
     expect(countPlannedFetches(result.plan)).toBe(5);
+  });
+});
+
+describe("bytesToHex / hexToBytes", () => {
+  it("round-trip a 16-byte IV and accept a 0x prefix", () => {
+    const iv = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 255]);
+    expect(bytesToHex(iv)).toBe("000102030405060708090a0b0c0d0e0f".slice(0, 30) + "ff");
+    expect([...hexToBytes(bytesToHex(iv))]).toEqual([...iv]);
+    expect([...hexToBytes("0x0aff")]).toEqual([10, 255]);
   });
 });

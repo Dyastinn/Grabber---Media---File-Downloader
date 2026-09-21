@@ -12,12 +12,14 @@
 import { classifyMedia, isStreamSegment, type MediaItem } from "../shared/media-types";
 import { guessFilename } from "../shared/filename";
 import type {
+  DiagnosticMessage,
   Message,
   SaveStreamFileMessage,
   SaveStreamFileResultMessage,
   StreamProgressListMessage,
 } from "../shared/messages";
 import type { StreamDownloadPlan } from "../shared/stream-plan";
+import { buildFetchDiagnostic, NetworkErrorLog, type FetchDiagnostic } from "./diagnostics";
 import { MediaStore } from "./media-store";
 import {
   buildHeaderRule,
@@ -31,6 +33,9 @@ import { StreamProgressStore } from "./stream-progress-store";
 const store = new MediaStore();
 const streamProgress = new StreamProgressStore();
 const requestHeaders = new RequestHeaderStore();
+const networkErrors = new NetworkErrorLog();
+/** Which tab each running stream download was started from, for its diagnostics. */
+const streamTabs = new Map<string, number>();
 
 const WATCHED_REQUEST_TYPES: chrome.webRequest.ResourceType[] = ["media", "xmlhttprequest", "object", "other"];
 
@@ -96,6 +101,7 @@ chrome.webRequest.onHeadersReceived.addListener(
 // ---------------------------------------------------------------------------
 function rememberRequestHeaders(details: chrome.webRequest.WebRequestHeadersDetails): void {
   if (details.tabId < 0 || !details.requestHeaders) return;
+  if (details.method === "OPTIONS") return; // a CORS preflight carries nothing worth replaying
   if (requestHeaders.record(details.url, details.requestHeaders)) {
     void installHeaderRule(details.url, requestHeaders.get(details.url) ?? {});
   }
@@ -114,32 +120,68 @@ try {
   );
 }
 
-/** What each origin's session rule currently sets, so unchanged headers don't rewrite it. */
-const installedRules = new Map<string, string>();
+// ---------------------------------------------------------------------------
+// 1c. Remember the browser's own reason for a failed request. fetch() in the
+//     popup/offscreen document only ever sees "Failed to fetch"; the real
+//     cause (ERR_BLOCKED_BY_CLIENT, ERR_CONNECTION_REFUSED, …) is here.
+// ---------------------------------------------------------------------------
+chrome.webRequest.onErrorOccurred.addListener(
+  (details) => networkErrors.record(details.url, details.error),
+  { urls: ["<all_urls>"] }
+);
 
-/** Makes the extension's own requests to `url`'s origin carry `headers`. No-op where declarativeNetRequest is unavailable (Firefox < 113). */
-async function installHeaderRule(url: string, headers: HeaderMap): Promise<void> {
-  const origin = originOf(url);
-  if (!origin || Object.keys(headers).length === 0 || !chrome.declarativeNetRequest) return;
-
-  const rule = buildHeaderRule(origin, headers);
-  const fingerprint = JSON.stringify(headers);
-  if (installedRules.get(origin) === fingerprint) return;
-  installedRules.set(origin, fingerprint);
-
-  try {
-    // Session rules survive a service-worker restart but not a browser
-    // restart; removing the id first makes this an upsert either way.
-    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [rule.id], addRules: [rule] });
-  } catch (error) {
-    installedRules.delete(origin);
-    console.warn("Couldn't install request-header rule for", origin, error);
-  }
+/** Builds and logs the diagnostic for a failed extension fetch, in the worker's console and the tab's. */
+function reportFetchFailure(tabId: number, url: string, stage: FetchDiagnostic["stage"], error: string): void {
+  const diagnostic = buildFetchDiagnostic({
+    url,
+    stage,
+    error,
+    ...(networkErrors.get(url) !== undefined && { networkError: networkErrors.get(url) }),
+    ...(requestHeaders.get(url) && { replayedHeaders: requestHeaders.get(url) }),
+  });
+  console.error("[Grabber] fetch failed", diagnostic);
+  const message: DiagnosticMessage = { type: "DIAGNOSTIC", diagnostic };
+  chrome.tabs.sendMessage(tabId, message).catch(() => undefined); // tab may be gone
 }
 
-/** Rule for a URL about to be fetched: the player's recorded headers, else Referer/Origin from the page. */
+/** What each origin's session rule currently sets, so unchanged headers don't rewrite it. */
+const installedRules = new Map<string, { fingerprint: string; done: Promise<void> }>();
+
+/**
+ * Makes the extension's own requests to `url`'s origin carry `headers`.
+ * Resolves once the rule is live — a caller about to fetch must await it,
+ * even when an identical install is already in flight. No-op where
+ * declarativeNetRequest is unavailable (Firefox < 113).
+ */
+function installHeaderRule(url: string, headers: HeaderMap): Promise<void> {
+  const origin = originOf(url);
+  if (!origin || Object.keys(headers).length === 0 || !chrome.declarativeNetRequest) return Promise.resolve();
+
+  const fingerprint = JSON.stringify(headers);
+  const current = installedRules.get(origin);
+  if (current?.fingerprint === fingerprint) return current.done;
+
+  const rule = buildHeaderRule(origin, headers, chrome.runtime.id);
+  // Session rules survive a service-worker restart but not a browser
+  // restart; removing the id first makes this an upsert either way.
+  const done = chrome.declarativeNetRequest
+    .updateSessionRules({ removeRuleIds: [rule.id], addRules: [rule] })
+    .catch((error: unknown) => {
+      installedRules.delete(origin);
+      console.warn("Couldn't install request-header rule for", origin, error);
+    });
+  installedRules.set(origin, { fingerprint, done });
+  return done;
+}
+
+/**
+ * Rule for a URL about to be fetched. Referer/Origin derived from the page go
+ * underneath whatever was recorded: the recorded set can be JS-set headers
+ * only (the sniffer's view, when the page loaded before the worker could
+ * observe its requests), and most hotlink checks want the Referer too.
+ */
 function prepareFetch(url: string, sourceUrl: string): Promise<void> {
-  return installHeaderRule(url, requestHeaders.get(url) ?? fallbackHeaders(sourceUrl));
+  return installHeaderRule(url, { ...fallbackHeaders(sourceUrl), ...requestHeaders.get(url) });
 }
 
 /** Every distinct origin a plan will fetch from — segments, init segments and decryption keys. */
@@ -207,7 +249,23 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       // popup disables the button, but it can be reopened mid-download.
       if (streamProgress.isActive(message.streamUrl)) break;
       streamProgress.update(message.streamUrl, "fetching", 0);
+      streamTabs.set(message.streamUrl, message.tabId);
       void startStreamDownload(message.streamUrl, message.sourceUrl, message.plan);
+      break;
+    }
+
+    case "REPORT_FETCH_FAILURE": {
+      reportFetchFailure(message.tabId, message.url, "manifest", message.error);
+      break;
+    }
+
+    case "REQUEST_HEADERS_SEEN": {
+      // The page-world sniffer saw these on the manifest request itself —
+      // covers the case where onSendHeaders missed it (worker still starting).
+      const entries = Object.entries(message.headers).map(([name, value]) => ({ name, value }));
+      if (requestHeaders.record(message.url, entries)) {
+        void installHeaderRule(message.url, requestHeaders.get(message.url) ?? {});
+      }
       break;
     }
 
@@ -239,6 +297,10 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
     case "STREAM_ERROR": {
       streamProgress.fail(message.streamUrl, message.message);
       notify("Download failed", message.message);
+      const tabId = streamTabs.get(message.streamUrl);
+      if (tabId !== undefined && message.failedUrl) {
+        reportFetchFailure(tabId, message.failedUrl, "segment", message.message);
+      }
       break;
     }
 

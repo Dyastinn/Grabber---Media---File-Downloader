@@ -20,9 +20,11 @@ import type {
   MediaListMessage,
   Message,
   PrepareStreamFetchMessage,
+  ReportFetchFailureMessage,
   StreamProgressEntry,
   StreamProgressListMessage,
 } from "../shared/messages";
+import { fetchWithCredentialFallback } from "../shared/fetch-with-fallback";
 import type { MediaItem, StreamQualitySource } from "../shared/media-types";
 import {
   describeQuality,
@@ -61,10 +63,13 @@ type PickerContext = { manifestUrl: string; sourceUrl: string; title?: string } 
 
 const pickers = new Map<string, PickerContext>();
 let items: MediaItem[] = [];
+/** The tab the popup is showing; failures get diagnosed into its console. */
+let activeTabId: number | undefined;
 
 async function loadAndRender(): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id === undefined) return;
+  activeTabId = tab.id;
 
   const request: GetMediaMessage = { type: "GET_MEDIA", tabId: tab.id };
   const response = (await chrome.runtime.sendMessage(request)) as MediaListMessage;
@@ -101,10 +106,19 @@ async function fetchText(url: string, sourceUrl: string): Promise<string> {
   const prepare: PrepareStreamFetchMessage = { type: "PREPARE_STREAM_FETCH", url, sourceUrl };
   await chrome.runtime.sendMessage(prepare);
 
-  // Extension pages are a different origin from the site, so cookies are not
-  // sent by default; login-gated players need them (host_permissions allows it).
-  const response = await fetch(url, { credentials: "include" });
-  if (!response.ok) throw new Error(`Couldn't load the stream manifest (HTTP ${response.status}).`);
+  let response: Response;
+  try {
+    response = await fetchWithCredentialFallback(url);
+  } catch (error) {
+    // fetch() only throws for network-level failures (blocked, DNS, TLS, a
+    // redirect the browser refused…), never for an HTTP status.
+    reportFetchFailure(url, errorMessage(error));
+    throw new Error(`Couldn't reach ${hostOf(url)} (${errorMessage(error)}). See the page's console (F12) for the cause.`);
+  }
+  if (!response.ok) {
+    reportFetchFailure(url, `HTTP ${response.status}`);
+    throw new Error(`Couldn't load the stream manifest (HTTP ${response.status}). See the page's console (F12) for details.`);
+  }
   return response.text();
 }
 
@@ -245,6 +259,7 @@ async function startStreamDownload(url: string, index: number): Promise<void> {
       type: "DOWNLOAD_STREAM",
       streamUrl: url,
       sourceUrl: context.sourceUrl,
+      tabId: activeTabId ?? -1,
       plan: result.plan,
     };
     await chrome.runtime.sendMessage(message);
@@ -378,3 +393,19 @@ chrome.runtime.onMessage.addListener((message: Message) => {
 });
 
 void loadAndRender();
+
+/** The background worker knows the browser's real network error; it logs the full diagnostic into the page's console. */
+function reportFetchFailure(url: string, error: string): void {
+  console.error("[Grabber] fetch failed", { url, error });
+  if (activeTabId === undefined) return;
+  const message: ReportFetchFailureMessage = { type: "REPORT_FETCH_FAILURE", tabId: activeTabId, url, error };
+  void chrome.runtime.sendMessage(message);
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}

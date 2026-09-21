@@ -2,7 +2,13 @@
 // reports results to the background service worker. No classification logic
 // lives here; that's all in scan.ts / shared/media-types.ts.
 
-import { isSnifferMessage, type MediaFoundMessage } from "../shared/messages";
+import {
+  isSnifferMessage,
+  SNIFFER_LISTENER_READY,
+  type MediaFoundMessage,
+  type Message,
+  type RequestHeadersSeenMessage,
+} from "../shared/messages";
 import { extractMediaItems, manifestItem, pageTitle } from "./scan";
 
 function reportFoundMedia(): void {
@@ -27,13 +33,31 @@ const observer = new MutationObserver(() => {
 });
 observer.observe(document.body, { childList: true, subtree: true, attributes: true });
 
+// Failure diagnostics from the background worker are printed here, in the
+// page's own console (F12) — the popup's console closes with the popup, and
+// the worker's is buried in chrome://extensions.
+chrome.runtime.onMessage.addListener((message: Message) => {
+  if (message.type !== "DIAGNOSTIC") return;
+  const { diagnostic } = message;
+  console.error(
+    `[Grabber] Couldn't fetch the ${diagnostic.stage} at ${diagnostic.host}: ${diagnostic.error}` +
+      (diagnostic.networkError ? ` — browser reported ${diagnostic.networkError}` : "") +
+      `\n${diagnostic.hint}`,
+    diagnostic
+  );
+});
+
 // The page-world sniffer (sniffer.ts) recognises manifests by their content
 // and posts them here, since it has no chrome.* access of its own. Only
 // same-window messages with our marker are trusted — any script on the page
 // can call window.postMessage.
 window.addEventListener("message", (event) => {
   if (event.source !== window || !isSnifferMessage(event.data)) return;
-  const { url, kind, childUrls } = event.data;
+  const { url, kind, childUrls, requestHeaders } = event.data;
+  if (requestHeaders) {
+    const seen: RequestHeadersSeenMessage = { type: "REQUEST_HEADERS_SEEN", url, headers: requestHeaders };
+    chrome.runtime.sendMessage(seen);
+  }
   const message: MediaFoundMessage = {
     type: "MEDIA_FOUND",
     items: [
@@ -45,3 +69,5 @@ window.addEventListener("message", (event) => {
   };
   chrome.runtime.sendMessage(message);
 });
+// Listener is attached above; tell the sniffer to flush anything it queued.
+window.postMessage(SNIFFER_LISTENER_READY, "*");

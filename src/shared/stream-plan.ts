@@ -11,7 +11,12 @@ import type { StreamKind } from "./media-types";
 export interface PlannedSegment {
   url: string;
   /** Present only when this segment must be AES-128-CBC decrypted after fetching. */
-  decryption?: { keyUrl: string; iv: Uint8Array };
+  /**
+   * The IV travels as 32 hex chars, not bytes: a plan crosses
+   * chrome.runtime.sendMessage, which JSON-serialises a Uint8Array into a
+   * plain object with no `.buffer` — the offscreen document then can't decrypt.
+   */
+  decryption?: { keyUrl: string; ivHex: string };
 }
 
 export interface PlannedTrack {
@@ -96,6 +101,18 @@ export function suggestStreamFilename(
   return `${base}-${qualityLabel}.mp4`;
 }
 
+export function bytesToHex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Inverse of bytesToHex; the offscreen document rebuilds the IV from the plan with it. */
+export function hexToBytes(hex: string): Uint8Array {
+  const clean = hex.replace(/^0[xX]/, "");
+  const bytes = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < bytes.length; i += 1) bytes[i] = Number.parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
+}
+
 function planHlsTrack(playlist: HlsMediaPlaylist): PlannedTrack {
   return {
     ...(playlist.initSegmentUrl && { initUrl: playlist.initSegmentUrl }),
@@ -104,7 +121,7 @@ function planHlsTrack(playlist: HlsMediaPlaylist): PlannedTrack {
       ...(segment.encryption && {
         decryption: {
           keyUrl: segment.encryption.keyUrl,
-          iv: computeSegmentIv(segment.sequenceNumber, segment.encryption.ivHex),
+          ivHex: bytesToHex(computeSegmentIv(segment.sequenceNumber, segment.encryption.ivHex)),
         },
       }),
     })),

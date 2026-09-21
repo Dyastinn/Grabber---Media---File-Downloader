@@ -14,15 +14,33 @@
 // is the only way to catch those.
 
 import { isMasterPlaylist, parseMasterPlaylist } from "../shared/hls-playlist";
+import { headersFromFetchArgs, type HeaderRecord } from "./fetch-headers";
 import { sniffManifestKind } from "../shared/media-types";
-import { SNIFFER_MESSAGE_SOURCE, type SnifferMessage } from "../shared/messages";
+import { SNIFFER_LISTENER_READY, SNIFFER_MESSAGE_SOURCE, type SnifferMessage } from "../shared/messages";
 
 /** Anything larger than this is media, not a playlist — don't read it. */
 const MAX_SNIFF_BODY = 4 * 1024 * 1024;
 
 const reported = new Set<string>();
 
-function report(url: string, text: string): void {
+// The isolated-world content script (the only thing listening for our
+// messages) is injected later than this script. Hold messages until it says
+// it is ready, else early manifests — usually THE manifest — are lost.
+let listenerReady = false;
+const pending: SnifferMessage[] = [];
+
+function post(message: SnifferMessage): void {
+  if (listenerReady) window.postMessage(message, "*");
+  else pending.push(message);
+}
+
+window.addEventListener("message", (event) => {
+  if (event.source !== window || event.data !== SNIFFER_LISTENER_READY) return;
+  listenerReady = true;
+  for (const message of pending.splice(0)) window.postMessage(message, "*");
+});
+
+function report(url: string, text: string, requestHeaders: HeaderRecord): void {
   if (!url || url.startsWith("blob:") || url.startsWith("data:")) return; // nothing re-fetchable
   const kind = sniffManifestKind(text);
   if (!kind || reported.has(url)) return;
@@ -37,8 +55,9 @@ function report(url: string, text: string): void {
     url,
     kind,
     ...(childUrls.length > 0 && { childUrls }),
+    ...(Object.keys(requestHeaders).length > 0 && { requestHeaders }),
   };
-  window.postMessage(message, "*");
+  post(message);
 }
 
 function masterChildren(text: string, url: string): string[] {
@@ -66,6 +85,13 @@ function mightBeManifest(contentType: string | null, contentLength: string | nul
 // ---------------------------------------------------------------------------
 const originalFetch = window.fetch;
 window.fetch = async function sniffingFetch(input, init) {
+  // Read before the call: a Request body/headers may be consumed by it.
+  let requestHeaders: HeaderRecord = {};
+  try {
+    requestHeaders = headersFromFetchArgs(input, init);
+  } catch {
+    // A malformed headers init will make the real fetch throw below anyway.
+  }
   const response = await originalFetch.call(this, input, init);
   try {
     const headers = response.headers;
@@ -73,7 +99,7 @@ window.fetch = async function sniffingFetch(input, init) {
       void response
         .clone()
         .text()
-        .then((text) => report(response.url, text))
+        .then((text) => report(response.url, text, requestHeaders))
         .catch(() => undefined);
     }
   } catch {
@@ -87,14 +113,33 @@ window.fetch = async function sniffingFetch(input, init) {
 // way, as text. Segments are usually requested as arraybuffer, which is not
 // read at all.
 // ---------------------------------------------------------------------------
+const xhrHeaders = new WeakMap<XMLHttpRequest, HeaderRecord>();
+
+const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+XMLHttpRequest.prototype.setRequestHeader = function sniffingSetRequestHeader(
+  this: XMLHttpRequest,
+  name: string,
+  value: string
+) {
+  try {
+    let headers = xhrHeaders.get(this);
+    if (!headers) xhrHeaders.set(this, (headers = {}));
+    headers[String(name).toLowerCase()] = String(value);
+  } catch {
+    // Never let sniffing break the page's own request.
+  }
+  return originalSetRequestHeader.call(this, name, value);
+};
+
 const originalOpen = XMLHttpRequest.prototype.open;
 XMLHttpRequest.prototype.open = function sniffingOpen(this: XMLHttpRequest, ...args: unknown[]) {
+  xhrHeaders.delete(this); // open() resets a reused XHR's headers
   this.addEventListener("load", () => {
     try {
       if (this.status < 200 || this.status >= 300) return;
       if (this.responseType !== "" && this.responseType !== "text") return;
       if (!mightBeManifest(this.getResponseHeader("content-type"), this.getResponseHeader("content-length"))) return;
-      report(this.responseURL, this.responseText);
+      report(this.responseURL, this.responseText, xhrHeaders.get(this) ?? {});
     } catch {
       // As above: sniffing must be invisible to the page.
     }

@@ -8,7 +8,7 @@
     <h1>Fixture page whose player loads its playlist from an API URL</h1>
     <!--
       Mimics a private player: the playlist comes from an extension-less URL
-      served as text/plain (invisible to URL/Content-Type classification), and
+      on a second origin (127.0.0.1, as a real CDN would be), served as text/plain (invisible to URL/Content-Type classification), and
       the player then fetches .ts segments — which must NOT be listed as
       thirty separate "videos". Only the page-world sniffer can catch the
       playlist here, by its #EXTM3U content. The server also demands the
@@ -21,11 +21,11 @@
       (async () => {
         // Playlist via fetch(): the sniffer wraps window.fetch.
         const master = await (
-          await fetch("/api/stream/playlist?video=42", { headers: { "X-Player-Token": "fixture-token" } })
+          await fetch("http://127.0.0.1:8765/api/stream/playlist?video=42", { headers: { "X-Player-Token": "fixture-token" } })
         ).text();
         // The player picks a quality and fetches its variant playlist — a
         // second manifest that must NOT become a second row.
-        await (await fetch("/stream/720p/index.m3u8")).text();
+        await (await fetch("http://127.0.0.1:8765/stream/720p/index.m3u8")).text();
         // Segments via XMLHttpRequest, as an HLS library would.
         for (const segment of ["seg0.ts", "seg1.ts"]) {
           const xhr = new XMLHttpRequest();
@@ -34,6 +34,8 @@
           xhr.send();
         }
         document.body.dataset.playlistLoaded = master.startsWith("#EXTM3U") ? "yes" : "no";
+        // Exposed for the e2e test: re-check what a plain page request carries.
+        window.echoToken = async () => (await (await fetch("/api/echo-token")).json()).token;
       })();
     </script>
   </body>

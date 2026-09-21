@@ -42,6 +42,11 @@ const NOT_REPLAYABLE = new Set([
   "upgrade-insecure-requests",
   "user-agent",
   "via",
+  // Change what the server DOES with a request; replaying one turns every GET
+  // into whatever method a page once overrode (a 405 on an unrelated site).
+  "x-http-method-override",
+  "x-http-method",
+  "x-method-override",
 ]);
 
 /** Keeps only headers worth replaying (Referer, Origin, Authorization, custom X-* tokens…), lower-cased. */
@@ -49,7 +54,10 @@ export function replayableHeaders(headers: Array<{ name: string; value?: string 
   const kept: HeaderMap = {};
   for (const { name, value } of headers) {
     const key = name.toLowerCase();
-    if (value === undefined || NOT_REPLAYABLE.has(key) || key.startsWith("sec-")) continue;
+    // sec-*: browser-set fetch metadata. access-control-request-*: only ever
+    // sent on a CORS preflight; replaying them on a GET confuses servers.
+    if (value === undefined || NOT_REPLAYABLE.has(key)) continue;
+    if (key.startsWith("sec-") || key.startsWith("access-control-request-")) continue;
     kept[key] = value;
   }
   return kept;
@@ -139,13 +147,18 @@ const CANONICAL_NAMES: Record<string, string> = {
 };
 
 /**
- * A declarativeNetRequest rule that sets `headers` on every fetch/XHR-style
- * request to `origin`. Not restricted to the extension's own requests: the
- * page's requests already carry these same values, so it is a no-op there.
+ * A declarativeNetRequest rule that sets `headers` on the EXTENSION'S OWN
+ * fetch/XHR-style requests to `origin` — popup and offscreen-document fetches,
+ * whose initiator is the extension's own origin (`initiatorDomains` takes the
+ * extension ID for those). It must never touch the page's requests: the recorded headers are a union of
+ * everything the page ever sent to that origin, and stamping that on every
+ * page request breaks sites (a token from one endpoint sent to another, a
+ * header from another tab, …).
  */
 export function buildHeaderRule(
   origin: string,
-  headers: HeaderMap
+  headers: HeaderMap,
+  extensionId: string
 ): chrome.declarativeNetRequest.Rule {
   return {
     id: ruleIdFor(origin),
@@ -167,6 +180,7 @@ export function buildHeaderRule(
         "media",
         "other",
       ] as chrome.declarativeNetRequest.ResourceType[],
+      initiatorDomains: [extensionId],
     },
   };
 }

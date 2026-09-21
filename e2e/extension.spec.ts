@@ -68,8 +68,10 @@ test("detects an HLS stream and offers its qualities in the popup", async () => 
     // The manifest is a stream, not a file: it lands in its own group and
     // offers a quality choice instead of an immediate download.
     // Named after the page title, not the manifest's generic "master.m3u8".
-    const streamRow = popup.locator(".media-row", { hasText: "Fixture stream page.m3u8" });
+    // (Both manifests on the page get that name; pick by URL.)
+    const streamRow = popup.locator(`.media-row[data-url="http://localhost:8765/stream/master.m3u8"]`);
     await expect(streamRow).toHaveCount(1, { timeout: 10_000 });
+    await expect(streamRow.locator(".media-filename")).toHaveText("Fixture stream page.m3u8");
     expect((await popup.locator("h2").allTextContents()).join(" ")).toMatch(/Video stream/);
 
     await streamRow.getByRole("button", { name: "Choose quality" }).click();
@@ -80,6 +82,20 @@ test("detects an HLS stream and offers its qualities in the popup", async () => 
     await expect(options).toHaveCount(2, { timeout: 10_000 });
     await expect(options.nth(0).locator(".quality-label")).toHaveText("720p");
     await expect(options.nth(1).locator(".quality-label")).toHaveText("360p");
+
+    // A manifest the popup can't fetch: the row explains, and — because the
+    // popup's own console vanishes with it — the reason, including the
+    // browser's real network error, is logged into the PAGE's console.
+    const pageErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") pageErrors.push(message.text());
+    });
+    const deadRow = popup.locator(`.media-row[data-url="http://localhost:8766/dead.m3u8"]`);
+    await deadRow.getByRole("button", { name: "Choose quality" }).click();
+    await expect(deadRow.locator(".row-notice")).toHaveText(/Couldn't reach localhost:8766/, { timeout: 10_000 });
+    await expect
+      .poll(() => pageErrors.find((text) => text.includes("[Grabber]")), { timeout: 10_000 })
+      .toMatch(/localhost:8766.*net::ERR_CONNECTION_REFUSED.*isn't reachable/s);
   } finally {
     await extension.dispose();
   }
@@ -110,9 +126,16 @@ test("recognises a playlist served from an extension-less text/plain URL, and hi
     await expect(popup.locator(".media-row", { hasText: ".ts" })).toHaveCount(0);
     expect((await popup.locator("h2").allTextContents()).join(" ")).not.toMatch(/Video \(/);
 
-    // And the sniffed URL is a real, parseable manifest: the picker works.
+    // And the sniffed URL is a real, parseable manifest: the picker works —
+    // which needs the extension's fetch to replay the page's X-Player-Token.
     await streamRow.getByRole("button", { name: "Choose quality" }).click();
     await expect(streamRow.locator(".quality-option")).toHaveCount(2, { timeout: 10_000 });
+
+    // That replay must be confined to the extension's own requests: the page's
+    // requests to other endpoints on the same origin must not grow the token.
+    // (Regression: a rule that modified page requests too broke unrelated sites.)
+    const leaked = await page.evaluate(() => (window as unknown as { echoToken: () => Promise<string | null> }).echoToken());
+    expect(leaked).toBeNull();
   } finally {
     await extension.dispose();
   }
